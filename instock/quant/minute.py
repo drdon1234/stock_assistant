@@ -17,7 +17,6 @@ import time
 from collections import OrderedDict
 
 import numpy as np
-import pandas as pd
 
 from instock import config, tradecal
 from instock.quant import store
@@ -71,9 +70,27 @@ def coverage():
 class Cache:
     """回测进程内的分钟数据缓存：按（股票, 年）加载，最多保留 limit 份。"""
 
-    def __init__(self, limit=400):
+    def __init__(self, limit=400, bars_limit=2000):
         self.limit = limit
         self._data = OrderedDict()
+        self.bars_limit = bars_limit
+        self._bars = OrderedDict()
+
+    def bars(self, code, day, day_open):
+        """某股票某天的 1 分钟 K 线（不复权，numpy 数组，另含 time 为每根结束时刻）；没有数据返回 None。"""
+        key = (code, day)
+        if key in self._bars:
+            self._bars.move_to_end(key)
+            return self._bars[key]
+        got = self.day(code, day)
+        bars = None
+        if got is not None:
+            bars = bars_for_day(*got, day_open)
+            bars['time'] = np.datetime64(day, 'm') + POINT_MINUTE.astype('timedelta64[m]')
+        self._bars[key] = bars
+        if len(self._bars) > self.bars_limit:
+            self._bars.popitem(last=False)
+        return bars
 
     def day(self, code, day):
         """某股票某天的 (收盘价[240], 成交量手[240])；没有数据返回 None。"""
@@ -233,7 +250,7 @@ def sync(scope='index', start=None, connections=8, end=None):
     previous = state.get('minute') or {}
     today = tradecal.now().date()
     skipped = {c: d for c, d in (previous.get('unavailable') or {}).items()
-               if (today - datetime.date.fromisoformat(d)).days < _UNAVAILABLE_DAYS}
+               if (today - datetime.date.fromisoformat(d)).days < _UNAVAILABLE_DAYS and not _dir(c).is_dir()}
     codes = [c for c in universe(scope) if c not in skipped]
     log.info('分钟数据同步开始：%d 只股票（另有 %d 只近期确认没有分时数据，跳过），%s ~ %s，%d 个连接', len(codes),
              len(skipped), start, end, connections)
@@ -254,7 +271,8 @@ def sync(scope='index', start=None, connections=8, end=None):
                 break
             plan, closes = _plan(code, start, end)
             planned = sorted(d for days in plan.values() for d in days)
-            if planned and not _available(fetcher, code, planned):
+            # 已有分钟数据的股票只是个别日期缺失，不判为无分时
+            if planned and not _dir(code).is_dir() and not _available(fetcher, code, planned):
                 with lock:
                     totals['unavailable'] += 1
                     unavailable[code] = today.isoformat()
@@ -318,12 +336,15 @@ def sync(scope='index', start=None, connections=8, end=None):
     return totals
 
 
-def frame_for_day(cache, code, day, day_open):
-    """一天的 1 分钟 K 线 DataFrame（索引为每分钟结束时刻）；没有数据返回 None。"""
-    got = cache.day(code, day)
-    if got is None:
-        return None
-    bars = bars_for_day(*got, day_open)
-    base = pd.Timestamp(day)
-    index = pd.DatetimeIndex([base + pd.Timedelta(minutes=int(m)) for m in POINT_MINUTE])
-    return pd.DataFrame(bars, index=index)
+def aggregate(bars, k):
+    """把一天的 1 分钟 K 线合成为 k 分钟（按 09:31、13:01 起对齐，只保留走完的 K 线）。"""
+    n = len(bars['close']) // k * k
+    if n == 0:
+        return {f: v[:0] for f, v in bars.items()}
+
+    def blocks(f):
+        return bars[f][:n].reshape(-1, k)
+
+    return {'open': blocks('open')[:, 0], 'close': blocks('close')[:, -1], 'high': blocks('high').max(axis=1),
+            'low': blocks('low').min(axis=1), 'volume': blocks('volume').sum(axis=1),
+            'money': blocks('money').sum(axis=1), 'time': blocks('time')[:, -1]}

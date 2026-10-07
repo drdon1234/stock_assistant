@@ -149,20 +149,6 @@ def _bar_minutes(unit):
     raise NotSupported(f'暂不支持 {unit} 周期：可用 daily/1d 与 1m/5m/15m/30m/60m/120m')
 
 
-def _aggregate(frame, k):
-    """把一天的 1 分钟 K 线合成为 k 分钟（按 09:31、13:01 起对齐，只保留走完的 K 线），索引为每根的结束时刻。"""
-    groups = np.arange(len(frame)) // k
-    complete = np.bincount(groups) == k
-    frame = frame[complete[groups]]
-    if frame.empty:
-        return frame
-    groups = groups[complete[groups]]
-    out = frame.groupby(groups).agg(open=('open', 'first'), close=('close', 'last'), high=('high', 'max'),
-                                    low=('low', 'min'), volume=('volume', 'sum'), money=('money', 'sum'))
-    out.index = frame.index[k - 1::k]
-    return out
-
-
 class Api:
     """绑定到一次回测的聚宽 API。"""
 
@@ -264,47 +250,57 @@ class Api:
             raise StrategyError(f'分钟线不支持字段：{", ".join(unknown)}')
         row, last = cursor
         col = [p.col.get(code, -1)]
-        ref = self._ref_row()
-        frames, total = [], 0
+        ref_factor = p.value('factor', self._ref_row(), code)
+        parts, total = [], 0
         while row >= 0 and (count is None or total < count):
             day = pd.Timestamp(p.dates[row]).date()
             if start is not None and day < start.date():
                 break
-            if p.block('paused', row, row + 1, col)[0, 0] == 0:
-                frame = minute.frame_for_day(bt.minutes, code, day, p.value('open', row, code))
-                if frame is None:
-                    bt.warn_once('no-minute-bars', f'{code} 等股票在 {day} 等日期没有分钟数据，分钟线中缺少这些日期')
-                else:
-                    frame = frame.iloc[:minute.MINUTES if last is None else last + 1]
-                    if k > 1:
-                        frame = _aggregate(frame, k)
-                    factor = p.value('factor', row, code)
-                    if fq == 'pre':
-                        scale = factor / p.value('factor', ref, code)
-                    elif fq == 'post':
-                        scale = factor
-                    else:
-                        scale = 1.0
-                    frame = frame.assign(**{f: frame[f] * scale for f in ('open', 'close', 'high', 'low')},
-                                         volume=frame['volume'] / scale)
-                    with np.errstate(invalid='ignore', divide='ignore'):
-                        frame['avg'] = np.where(frame['volume'] > 0, frame['money'] / frame['volume'], frame['close'])
-                    frame['price'] = frame['avg']
-                    frame['factor'] = scale if fq in ('pre', 'post') else 1.0
-                    frame['high_limit'] = p.value('high_limit', row, code) * scale
-                    frame['low_limit'] = p.value('low_limit', row, code) * scale
-                    frame['paused'] = 0.0
-                    frames.append(frame)
-                    total += len(frame)
+            daily = {f: p.block(f, row, row + 1, col)[0, 0] for f in ('paused', 'open', 'factor', 'high_limit',
+                                                                         'low_limit')}
+            bars = bt.minutes.bars(code, day, daily['open']) if daily['paused'] == 0 else None
+            if bars is None and daily['paused'] == 0:
+                bt.warn_once('no-minute-bars', f'{code} 等股票在 {day} 等日期没有分钟数据，分钟线中缺少这些日期')
+            if bars is not None:
+                if last is not None:
+                    bars = {f: v[:last + 1] for f, v in bars.items()}
+                if k > 1:
+                    bars = minute.aggregate(bars, k)
+                scale = {'pre': daily['factor'] / ref_factor, 'post': daily['factor']}.get(fq, 1.0)
+                parts.append((bars, scale, daily))
+                total += len(bars['close'])
             row, last = row - 1, None
-        if not frames:
-            return pd.DataFrame(columns=fields, index=pd.DatetimeIndex([]), dtype=float)
-        out = pd.concat(frames[::-1])
+        parts.reverse()
+
+        def column(f):
+            if not parts:
+                return np.array([], dtype=float)
+            if f in ('open', 'close', 'high', 'low'):
+                return np.concatenate([b[f] * s for b, s, _ in parts])
+            if f == 'volume':
+                return np.concatenate([b['volume'] / s for b, s, _ in parts])
+            if f in ('money', 'time'):
+                return np.concatenate([b[f] for b, _, _ in parts])
+            if f in ('avg', 'price'):
+                money, volume, close = column('money'), column('volume'), column('close')
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    return np.where(volume > 0, money / volume, close)
+            if f == 'factor':
+                return np.concatenate([np.full(len(b['close']), s if fq in ('pre', 'post') else 1.0)
+                                       for b, s, _ in parts])
+            if f in ('high_limit', 'low_limit'):
+                return np.concatenate([np.full(len(b['close']), d[f] * s) for b, s, d in parts])
+            return np.zeros(sum(len(b['close']) for b, _, _ in parts))  # paused
+
+        times = column('time')
+        keep = np.ones(len(times), dtype=bool)
         if start is not None:
-            out = out[out.index >= start]
+            keep &= times >= np.datetime64(start, 'm')
+        index = np.flatnonzero(keep)
         if count is not None:
-            out = out.tail(int(count))
-        return out[fields]
+            index = index[-int(count):]
+        return pd.DataFrame({f: column(f)[index] for f in fields},
+                            index=pd.DatetimeIndex(times[index], name=None))
 
     # ---------- 行情：聚宽函数 ----------
 

@@ -180,7 +180,7 @@ def test_minute_sync_resumes_and_validates(quant_data, monkeypatch):  # noqa: F8
     assert totals['days'] == 2
 
 
-def test_minute_sync_skips_stocks_without_data(minute_data, monkeypatch):
+def test_minute_sync_skips_stocks_without_data(minute_data, monkeypatch, tmp_path):
     calls = []
 
     class EmptyClient:
@@ -199,11 +199,17 @@ def test_minute_sync_skips_stocks_without_data(minute_data, monkeypatch):
             return None  # 已退市股票：各服务器都没有分时
 
     monkeypatch.setattr(tdxhq, 'Client', EmptyClient)
+    # 已有分钟数据的股票：只是个别日期缺失，照常逐日请求，不判为无分时
     totals = minute.sync(['600000.XSHG'], DAYS[0].isoformat(), connections=1, end=DAYS[-1])
-    # 只缺 NO_MINUTE_DAY 一天：抽查这一天，主、备两台服务器都问过后放弃，不再逐日请求
-    assert totals['unavailable'] == 1 and totals['days'] == 0
-    assert len(calls) == 2 and calls[0][0] != calls[1][0]
-    assert '600000.XSHG' in store.load_state()['minute']['unavailable']
+    assert totals['unavailable'] == 0 and totals['empty'] == 1
+    assert '600000.XSHG' not in (store.load_state()['minute'].get('unavailable') or {})
+    # 没有任何分钟数据的股票（通常已退市）：抽查首、中、尾三天，主、备服务器都没有就放弃
+    monkeypatch.setattr(minute, '_dir', lambda code: tmp_path / code)  # 空的分钟数据目录
     calls.clear()
-    minute.sync(['600000.XSHG'], DAYS[0].isoformat(), connections=1, end=DAYS[-1])
+    totals = minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=1, end=DAYS[30])
+    assert totals['unavailable'] == 1 and totals['days'] == 0
+    assert len(calls) == 6 and calls[0][0] != calls[1][0]
+    assert '300001.XSHE' in store.load_state()['minute']['unavailable']
+    calls.clear()
+    minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=1, end=DAYS[30])
     assert calls == []  # 近期确认没有数据的股票直接跳过

@@ -78,7 +78,9 @@ def _quant_command(args, parser):
         print(f"数据：{'就绪' if status['ready'] else '未就绪'}，{status['start'] or '-'} ~ {status['end'] or '-'}，"
               f"股票 {status['securities'] or 0} 只，最近同步 {status['synced_at'] or '-'}")
         print(f"原始数据 {len(store.raw_codes())} 只证券；运行器：{runner.runner_status()}")
-        print(f"分钟数据：{status['minute'] or '无'}")
+        m = status['minute']
+        print(f"分钟数据：{m['start']} ~ {m['end']}，{m['stocks']} 只股票，确认没有分时 {len(m.get('unavailable') or {})} 只，"
+              f"最近同步 {m['synced_at']}" if m else '分钟数据：无')
     elif args.action == 'runner':
         runner.run_forever()
     elif args.action == 'run':
