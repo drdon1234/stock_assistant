@@ -456,7 +456,12 @@ class Backtest:
             if filled < pos.total_amount and not code.startswith('688'):
                 filled = filled // 100 * 100  # 部分卖出须为整手，清仓时零股可一并卖出
             if filled <= 0:
-                reason = '今日买入的股票次日才能卖出（T+1）' if pos.closeable_amount < 100 else '超过当日成交量限制'
+                if pos.closeable_amount <= 0:
+                    reason = '今日买入的股票次日才能卖出（T+1）'
+                elif volume_cap < 100:
+                    reason = '超过当日成交量限制'
+                else:
+                    reason = '卖出数量不足一手（部分卖出须为 100 股的整数倍）'
                 return self._reject(code, reason)
             value = filled * price
             commission = max(cost.min_commission, value * cost.close_commission)

@@ -168,10 +168,39 @@ def test_minute_sync_resumes_and_validates(quant_data, monkeypatch):  # noqa: F8
 
     monkeypatch.setattr(tdxhq, 'Client', FakeClient)
     totals = minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=2, end=DAYS[9])
-    assert totals['days'] == 9 and totals['mismatch'] == 1 and len(calls) == 10
+    assert totals['days'] == 9 and totals['mismatch'] == 1 and len(calls) == 1 + 10  # 先抽查（第一天有数据即停止）
     saved = minute.load('300001.XSHE', 2022)
     assert len(saved['dates']) == 9 and saved['price'].shape == (9, 240)
     calls.clear()
     totals = minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=2, end=DAYS[11])
-    assert sorted(calls) == [DAYS[7], DAYS[10], DAYS[11]]  # 只补缺失的日期
+    assert sorted(set(calls)) == [DAYS[7], DAYS[10], DAYS[11]]  # 只补缺失的日期
     assert totals['days'] == 2
+
+
+def test_minute_sync_skips_stocks_without_data(minute_data, monkeypatch):
+    calls = []
+
+    class EmptyClient:
+        def __init__(self, host, timeout=10):
+            self.host, self.sock = host, None
+
+        def connect(self):
+            self.sock = object()
+            return self
+
+        def close(self):
+            self.sock = None
+
+        def minutes(self, code, day):
+            calls.append((self.host, day))
+            return None  # 已退市股票：各服务器都没有分时
+
+    monkeypatch.setattr(tdxhq, 'Client', EmptyClient)
+    totals = minute.sync(['600000.XSHG'], DAYS[0].isoformat(), connections=1, end=DAYS[-1])
+    # 只缺 NO_MINUTE_DAY 一天：抽查这一天，主、备两台服务器都问过后放弃，不再逐日请求
+    assert totals['unavailable'] == 1 and totals['days'] == 0
+    assert len(calls) == 2 and calls[0][0] != calls[1][0]
+    assert '600000.XSHG' in store.load_state()['minute']['unavailable']
+    calls.clear()
+    minute.sync(['600000.XSHG'], DAYS[0].isoformat(), connections=1, end=DAYS[-1])
+    assert calls == []  # 近期确认没有数据的股票直接跳过

@@ -5,7 +5,8 @@ minute/<代码>/<年>.npz：dates int32[n]（yyyymmdd）、price float32[n,240]�
 成交额按收盘价 × 成交量估算。
 
 同步只抓本地日线显示“当天有成交”的交易日；每天的最后一分钟价格须等于日线收盘价，否则视为异常数据丢弃。
-回补与增量是同一个过程，按股票、按年保存，中断后重跑从断点继续。
+回补与增量是同一个过程，按股票、按年保存，中断后重跑从断点继续。通达信不保留已退市股票的分时：每只股票先抽查
+几天，都没有数据就跳过并记下，之后 90 天内不再尝试。
 """
 import datetime
 import logging
@@ -148,41 +149,74 @@ class _Hosts:
         self._next = 0
         self._lock = threading.Lock()
 
-    def pick(self):
+    def pick(self, avoid=None):
         with self._lock:
             now = time.monotonic()
             for _ in range(len(self._hosts)):
                 host = self._hosts[self._next % len(self._hosts)]
                 self._next += 1
-                if self._bad.get(host, 0) <= now:
+                if self._bad.get(host, 0) <= now and host != avoid:
                     return host
         time.sleep(5)
-        return self.pick()
+        return self.pick(avoid)
 
     def bad(self, host):
         with self._lock:
             self._bad[host] = time.monotonic() + 600
 
 
-def _fetch_day(client, hosts, code, day):
-    """抓一天，出错时换服务器重试，最多 3 次。返回 (client, 结果)：结果为 False 表示出错，None 表示各服务器都没有数据。
-    只会请求日线显示有成交的日期，所以空结果也换服务器再试（个别服务器会缺某些日期）。"""
-    empty = False
-    for attempt in range(3):
-        try:
-            if client.sock is None:
-                client = tdxhq.Client(hosts.pick()).connect()
-            got = client.minutes(code, day)
+class _Fetcher:
+    """一个工作线程的两条常驻连接（连到不同服务器）。主连接没有数据时问备用连接（个别服务器会缺某些日期），
+    出错时把该服务器冷却并换一台重连。"""
+
+    def __init__(self, hosts):
+        self.hosts = hosts
+        self.clients = [None, None]
+
+    def _client(self, i):
+        client = self.clients[i]
+        if client is None or client.sock is None:
+            other = self.clients[1 - i]
+            client = self.clients[i] = tdxhq.Client(self.hosts.pick(other.host if other else None))
+            client.connect()
+        return client
+
+    def fetch(self, code, day):
+        """返回 (收盘价, 成交量)；None 表示两台服务器都没有这天的数据；False 表示多次出错。"""
+        errors, empties, i = 0, 0, 0
+        while errors < 3:
+            try:
+                got = self._client(i).minutes(code, day)
+            except (OSError, tdxhq.TdxError, ValueError) as e:
+                client = self.clients[i]
+                log.debug('%s %s 请求失败（%s）：%s', code, day, client.host[0] if client else '-', e)
+                if client is not None:
+                    self.hosts.bad(client.host)
+                    client.close()
+                self.clients[i] = None
+                errors += 1
+                continue
             if got is not None:
-                return client, got
-            empty = True
-            log.debug('%s %s 在 %s 上没有数据，换服务器重试', code, day, client.host[0])
-        except (OSError, tdxhq.TdxError, ValueError) as e:
-            log.debug('%s %s 第 %d 次失败（%s）：%s', code, day, attempt + 1, client.host[0], e)
-            hosts.bad(client.host)
-        client.close()
-        client = tdxhq.Client(hosts.pick())
-    return client, None if empty else False
+                return got
+            empties += 1
+            if empties >= 2:
+                return None
+            i = 1 - i
+        return False
+
+    def close(self):
+        for client in self.clients:
+            if client is not None:
+                client.close()
+
+
+_UNAVAILABLE_DAYS = 90  # 抽查都没有数据的股票，多少天内不再尝试
+
+
+def _available(fetcher, code, days):
+    """抽查首、中、尾 3 天：都没有数据（通常是已退市股票）返回 False。"""
+    picks = sorted({days[0], days[len(days) // 2], days[-1]})
+    return any(fetcher.fetch(code, day) for day in picks)
 
 
 def sync(scope='index', start=None, connections=8, end=None):
@@ -193,28 +227,40 @@ def sync(scope='index', start=None, connections=8, end=None):
     if not state.get('last_date'):
         raise RuntimeError('请先运行 python -m instock quant sync 同步日线数据')
     end = end or datetime.date.fromisoformat(state['last_date'])
-    codes = universe(scope)
-    log.info('分钟数据同步开始：%d 只股票，%s ~ %s，%d 个连接', len(codes), start, end, connections)
+    previous = state.get('minute') or {}
+    today = tradecal.now().date()
+    skipped = {c: d for c, d in (previous.get('unavailable') or {}).items()
+               if (today - datetime.date.fromisoformat(d)).days < _UNAVAILABLE_DAYS}
+    codes = [c for c in universe(scope) if c not in skipped]
+    log.info('分钟数据同步开始：%d 只股票（另有 %d 只近期确认没有分时数据，跳过），%s ~ %s，%d 个连接', len(codes),
+             len(skipped), start, end, connections)
     hosts = _Hosts(tdxhq.HOSTS)
     tasks = queue.Queue()
     for code in codes:
         tasks.put(code)
-    totals = {'stocks': 0, 'days': 0, 'calls': 0, 'mismatch': 0, 'failed': 0, 'empty': 0}
+    totals = {'stocks': 0, 'days': 0, 'calls': 0, 'mismatch': 0, 'failed': 0, 'empty': 0, 'unavailable': 0}
     lock = threading.Lock()
+    unavailable = {}
 
     def worker():
-        client = tdxhq.Client(hosts.pick())
+        fetcher = _Fetcher(hosts)
         while True:
             try:
                 code = tasks.get_nowait()
             except queue.Empty:
                 break
             plan, closes = _plan(code, start, end)
+            planned = sorted(d for days in plan.values() for d in days)
+            if planned and not _available(fetcher, code, planned):
+                with lock:
+                    totals['unavailable'] += 1
+                    unavailable[code] = today.isoformat()
+                plan = {}
             for year, days in plan.items():
                 existing = load(code, year)
                 dates, prices, volumes = [], [], []
                 for day in days:
-                    client, got = _fetch_day(client, hosts, code, day)
+                    got = fetcher.fetch(code, day)
                     with lock:
                         totals['calls'] += 1
                         if got is False:
@@ -244,10 +290,11 @@ def sync(scope='index', start=None, connections=8, end=None):
                 n = totals['stocks']
             if n % 20 == 0:
                 elapsed = time.monotonic() - started
-                log.info('分钟数据：%d / %d 只，新增 %d 天，%.0f 次/秒，异常 %d，失败 %d，预计还需 %.0f 分钟',
-                         n, len(codes), totals['days'], totals['calls'] / elapsed, totals['mismatch'], totals['failed'],
+                log.info('分钟数据：%d / %d 只，新增 %d 天，%.0f 次/秒，与日线不符 %d，无数据 %d 天，无分时股票 %d 只，'
+                         '失败 %d，预计还需 %.0f 分钟', n, len(codes), totals['days'], totals['calls'] / elapsed,
+                         totals['mismatch'], totals['empty'], totals['unavailable'], totals['failed'],
                          elapsed / n * (len(codes) - n) / 60)
-        client.close()
+        fetcher.close()
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(connections)]
     for t in threads:
@@ -259,12 +306,14 @@ def sync(scope='index', start=None, connections=8, end=None):
     state['minute'] = {
         'scope': scope if isinstance(scope, str) else 'custom',
         'start': min(start.isoformat(), previous.get('start') or start.isoformat()),
-        'end': end.isoformat(), 'stocks': max(len(codes), previous.get('stocks') or 0),
+        'end': end.isoformat(), 'stocks': max(len(codes) - len(unavailable), previous.get('stocks') or 0),
         'synced_at': tradecal.now().isoformat(' ', 'seconds'),
+        'unavailable': {**skipped, **unavailable},
     }
     store.save_state(state)
-    log.info('分钟数据同步结束：%d 只股票，新增 %d 天，与日线不符 %d，无数据 %d，失败 %d，耗时 %.0f 分钟', len(codes),
-             totals['days'], totals['mismatch'], totals['empty'], totals['failed'], (time.monotonic() - started) / 60)
+    log.info('分钟数据同步结束：%d 只股票，新增 %d 天，与日线不符 %d，无数据 %d 天，无分时股票 %d 只，失败 %d，耗时 %.0f 分钟',
+             len(codes), totals['days'], totals['mismatch'], totals['empty'], totals['unavailable'], totals['failed'],
+             (time.monotonic() - started) / 60)
     return totals
 
 
