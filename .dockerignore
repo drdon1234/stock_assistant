@@ -1,0 +1,22 @@
+# 构建上下文只需要 requirements.txt、instock/ 与 frontend/
+.git
+.github
+.idea
+.vscode
+.claude
+.env
+.env.*
+data
+tests
+docs
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.venv
+venv
+frontend/node_modules
+frontend/dist
+instock/web/dist
+*.md
+docker-compose*.yml

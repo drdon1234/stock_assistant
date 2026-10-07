@@ -1,0 +1,45 @@
+# InStock：数据库 + Web 服务 + 调度进程。配置见同目录 .env（由 .env.example 复制）
+# 默认拉取 Docker Hub 镜像；从源码构建时先执行 docker build -t drdon1234/stock_assistant:latest .
+name: instock
+
+x-app: &app
+  image: ${INSTOCK_IMAGE:-drdon1234/stock_assistant:latest}
+  restart: unless-stopped
+  environment:
+    MYSQL_HOST: instock-db
+    MYSQL_USER: root
+    MYSQL_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+    TZ: Asia/Shanghai
+  volumes:
+    - ${INSTOCK_HOME:-./data}/app:/data
+  depends_on:
+    instock-db:
+      condition: service_healthy
+
+services:
+  instock-db:
+    image: mariadb:11
+    container_name: instock-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - ${INSTOCK_HOME:-./data}/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  instock-web:
+    <<: *app
+    container_name: instock-web
+    command: ["python", "-m", "instock", "web"]
+    ports:
+      - "${INSTOCK_PORT:-9988}:9988"
+
+  instock-worker:
+    <<: *app
+    container_name: instock-worker
+    command: ["python", "-m", "instock", "worker"]

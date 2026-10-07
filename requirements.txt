@@ -1,0 +1,8 @@
+numpy==2.5.3
+pandas==3.0.6
+TA-Lib==0.8.1
+SQLAlchemy==2.1.3
+PyMySQL==1.2.3
+requests==2.34.2
+tornado==6.5.10
+mini-racer==0.14.1

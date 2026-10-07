@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# 运行数据：数据库、K 线缓存、日志、代理与 Cookie 配置
+data/
+.env
+
+# 前端依赖与构建产物（构建输出到 instock/web/dist，由 Docker 构建或本地 npm run build 生成）
+frontend/node_modules/
+instock/web/dist/
+
+# 编辑器
+.idea/
+.vscode/

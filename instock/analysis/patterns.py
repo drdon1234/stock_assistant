@@ -1,0 +1,75 @@
+"""K 线形态识别（TA-Lib 61 种蜡烛图形态）。
+结果：正数为看涨信号，负数为看跌信号，0 为未出现；绝对值 100 为普通信号，200 为确认信号。
+"""
+import numpy as np
+import talib
+
+# (列名, 中文名, TA-Lib 函数)
+PATTERNS = (
+    ('two_crows', '两只乌鸦', 'CDL2CROWS'),
+    ('upside_gap_two_crows', '向上跳空的两只乌鸦', 'CDLUPSIDEGAP2CROWS'),
+    ('three_black_crows', '三只乌鸦', 'CDL3BLACKCROWS'),
+    ('identical_three_crows', '三胞胎乌鸦', 'CDLIDENTICAL3CROWS'),
+    ('three_line_strike', '三线打击', 'CDL3LINESTRIKE'),
+    ('dark_cloud_cover', '乌云压顶', 'CDLDARKCLOUDCOVER'),
+    ('evening_doji_star', '十字暮星', 'CDLEVENINGDOJISTAR'),
+    ('doji_star', '十字星', 'CDLDOJISTAR'),
+    ('hanging_man', '上吊线', 'CDLHANGINGMAN'),
+    ('hikkake_pattern', '陷阱', 'CDLHIKKAKE'),
+    ('modified_hikkake_pattern', '修正陷阱', 'CDLHIKKAKEMOD'),
+    ('in_neck_pattern', '颈内线', 'CDLINNECK'),
+    ('on_neck_pattern', '颈上线', 'CDLONNECK'),
+    ('thrusting_pattern', '插入', 'CDLTHRUSTING'),
+    ('shooting_star', '射击之星', 'CDLSHOOTINGSTAR'),
+    ('stalled_pattern', '停顿形态', 'CDLSTALLEDPATTERN'),
+    ('advance_block', '大敌当前', 'CDLADVANCEBLOCK'),
+    ('high_wave_candle', '风高浪大线', 'CDLHIGHWAVE'),
+    ('engulfing_pattern', '吞噬模式', 'CDLENGULFING'),
+    ('abandoned_baby', '弃婴', 'CDLABANDONEDBABY'),
+    ('closing_marubozu', '收盘缺影线', 'CDLCLOSINGMARUBOZU'),
+    ('doji', '十字', 'CDLDOJI'),
+    ('up_down_gap', '向上/下跳空并列阳线', 'CDLGAPSIDESIDEWHITE'),
+    ('long_legged_doji', '长脚十字', 'CDLLONGLEGGEDDOJI'),
+    ('rickshaw_man', '黄包车夫', 'CDLRICKSHAWMAN'),
+    ('marubozu', '光头光脚/缺影线', 'CDLMARUBOZU'),
+    ('three_inside_up_down', '三内部上涨和下跌', 'CDL3INSIDE'),
+    ('three_outside_up_down', '三外部上涨和下跌', 'CDL3OUTSIDE'),
+    ('three_stars_in_the_south', '南方三星', 'CDL3STARSINSOUTH'),
+    ('three_white_soldiers', '三个白兵', 'CDL3WHITESOLDIERS'),
+    ('belt_hold', '捉腰带线', 'CDLBELTHOLD'),
+    ('breakaway', '脱离', 'CDLBREAKAWAY'),
+    ('concealing_baby_swallow', '藏婴吞没', 'CDLCONCEALBABYSWALL'),
+    ('counterattack', '反击线', 'CDLCOUNTERATTACK'),
+    ('dragonfly_doji', '蜻蜓十字/T形十字', 'CDLDRAGONFLYDOJI'),
+    ('evening_star', '暮星', 'CDLEVENINGSTAR'),
+    ('gravestone_doji', '墓碑十字/倒T十字', 'CDLGRAVESTONEDOJI'),
+    ('hammer', '锤头', 'CDLHAMMER'),
+    ('harami_pattern', '母子线', 'CDLHARAMI'),
+    ('harami_cross_pattern', '十字孕线', 'CDLHARAMICROSS'),
+    ('homing_pigeon', '家鸽', 'CDLHOMINGPIGEON'),
+    ('inverted_hammer', '倒锤头', 'CDLINVERTEDHAMMER'),
+    ('kicking', '反冲形态', 'CDLKICKING'),
+    ('kicking_bull_bear', '由较长缺影线决定的反冲形态', 'CDLKICKINGBYLENGTH'),
+    ('ladder_bottom', '梯底', 'CDLLADDERBOTTOM'),
+    ('long_line_candle', '长蜡烛', 'CDLLONGLINE'),
+    ('matching_low', '相同低价', 'CDLMATCHINGLOW'),
+    ('mat_hold', '铺垫', 'CDLMATHOLD'),
+    ('morning_doji_star', '十字晨星', 'CDLMORNINGDOJISTAR'),
+    ('morning_star', '晨星', 'CDLMORNINGSTAR'),
+    ('piercing_pattern', '刺透形态', 'CDLPIERCING'),
+    ('rising_falling_three', '上升/下降三法', 'CDLRISEFALL3METHODS'),
+    ('separating_lines', '分离线', 'CDLSEPARATINGLINES'),
+    ('short_line_candle', '短蜡烛', 'CDLSHORTLINE'),
+    ('spinning_top', '纺锤', 'CDLSPINNINGTOP'),
+    ('stick_sandwich', '条形三明治', 'CDLSTICKSANDWICH'),
+    ('takuri', '探水竿', 'CDLTAKURI'),
+    ('tasuki_gap', '跳空并列阴阳线', 'CDLTASUKIGAP'),
+    ('tristar_pattern', '三星', 'CDLTRISTAR'),
+    ('unique_3_river', '奇特三河床', 'CDLUNIQUE3RIVER'),
+    ('upside_downside_gap', '上升/下降跳空三法', 'CDLXSIDEGAP3METHODS'),
+)
+
+
+def detect(o, h, l, c):
+    """对整段 K 线计算全部形态，返回 {列名: int 数组}。形态只依赖历史数据，可直接按日期取值。"""
+    return {key: getattr(talib, func)(o, h, l, c).astype(np.int16) for key, _, func in PATTERNS}
