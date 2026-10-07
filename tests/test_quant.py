@@ -50,13 +50,16 @@ def _closes_a():
 
 @pytest.fixture(scope='module')
 def quant_data():
-    """在测试数据目录中生成两只股票、一个指数的回测数据。"""
+    """在测试数据目录中生成两只股票、一个指数的回测数据（其他测试模块复用时只生成一次）。"""
     a = _closes_a()
-    store.write_raw('600000.XSHG', _raw(a, {DIVIDEND: round(a[DIVIDEND - 1] - 0.5, 2)}, paused=(PAUSED,),
-                                        limit_up=(LIMIT_UP,)))
     b = [20 + 0.2 * i for i in range(60)]
     for i in range(SPLIT, 60):
         b[i] = round(b[i] / 2, 3)
+    config.QUANT_START = DAYS[0].isoformat()
+    if store.load_state().get('ready'):
+        return a, b
+    store.write_raw('600000.XSHG', _raw(a, {DIVIDEND: round(a[DIVIDEND - 1] - 0.5, 2)}, paused=(PAUSED,),
+                                        limit_up=(LIMIT_UP,)))
     store.write_raw('300001.XSHE', _raw(b, {SPLIT: b[SPLIT - 1] / 2}))  # 10 送 10
     store.write_raw('000300.XSHG', _raw([4000 + 10 * i for i in range(60)]))
     store.save_securities(pd.DataFrame({
@@ -260,11 +263,13 @@ def initialize(context):
 
 def test_static_check():
     report = check.check('import jqlib\ndef initialize(context):\n    q = query(valuation.code)\n'
-                         '    run_daily(f, "14:50")\n    get_price("600000.XSHG", frequency="1m")\n')
+                         '    run_daily(f, "14:50")\n    get_price("600000.XSHG", frequency="1w")\n'
+                         '    get_bars("600000.XSHG", 5, "5m")\n')
     messages = ' '.join(i['message'] for i in report['warnings'])
+    notes = ' '.join(i['message'] for i in report['notes'])
     assert not report['errors']
-    assert 'jqlib' in messages and 'query' in messages and 'valuation.code' in messages and '1m' in messages
-    assert '收盘价' in report['notes'][0]['message']
+    assert 'jqlib' in messages and 'query' in messages and 'valuation.code' in messages and '1w' in messages
+    assert '14:50' in notes and '5m 分钟线' in notes
     assert check.check('def f(:\n')['errors'][0]['line'] == 1
     assert check.check('x = 1')['errors'][0]['message'].startswith('缺少 initialize')
 

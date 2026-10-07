@@ -1,7 +1,8 @@
 """日线回测引擎，撮合与账户语义尽量与聚宽一致。
 
-- 时间：每个交易日依次为 09:00 盘前、09:30 开盘、各定时时刻、15:00 收盘、15:30 盘后。日线数据只有开盘价和收盘价，
-  12:00 之前的时刻按开盘价撮合与显示最新价，12:00 之后按收盘价（例如常见的 14:50 尾盘交易）。
+- 时间：每个交易日依次为 09:00 盘前、09:30 开盘、各定时时刻、15:00 收盘、15:30 盘后。09:30 按开盘价、15:00 按收盘价撮合；
+  盘中时刻（如 10:00、14:50）有分钟数据时按该分钟收盘价，没有时 12:00 之前按开盘价、之后按收盘价近似。
+- 频率：day 为日级（handle_data 每天 09:30 调用一次）；minute 为分钟级（handle_data 每分钟调用，需要分钟数据）。
 - 未来数据：history/attribute_history/get_bars 不含当天；get_price 在收盘（15:00）之后才能取到当天。
 - 价格：按真实价格（不复权）撮合；行情接口默认按“回测当天”动态前复权，与聚宽 use_real_price 一致。
 - 交易规则：T+1，买入按手（100 股，科创板至少 200 股），停牌不能交易，开盘/收盘价处于涨停不能买、跌停不能卖，
@@ -16,6 +17,9 @@ import time
 import numpy as np
 import pandas as pd
 
+from instock.quant import minute as minute_data
+
+EVERY_BAR = -1  # run_daily(..., 'every_bar')：日级为开盘时，分钟级为每分钟
 BEFORE_OPEN, OPEN, NOON, CLOSE, AFTER_CLOSE = 540, 570, 720, 900, 930
 _TIME_NAMES = {'before_open': BEFORE_OPEN, 'open': OPEN, 'every_bar': OPEN, 'close': CLOSE,
                'after_close': AFTER_CLOSE}
@@ -247,7 +251,7 @@ def _default_cost(day):
 
 class Backtest:
     def __init__(self, panel, securities, members, trade_days, start, end, capital, benchmark='000300.XSHG',
-                 progress=None):
+                 progress=None, frequency='day'):
         self.panel = panel
         self.securities = securities.set_index('code') if 'code' in securities.columns else securities
         self.members = members
@@ -263,6 +267,10 @@ class Backtest:
         self.capital = float(capital)
         self.benchmark = benchmark
         self.progress = progress
+        if frequency not in ('day', 'minute'):
+            raise StrategyError(f'不支持的回测频率：{frequency}，可选 day / minute')
+        self.frequency = frequency
+        self.minutes = minute_data.Cache()
         self.portfolio = Portfolio(capital)
         self.context = Context(self.portfolio, RunParams(start, end))
         self.r = r0
@@ -342,10 +350,31 @@ class Backtest:
         return self.panel.value(field, self.r if r is None else r, code)
 
     def current_price(self, code):
-        """当前时刻的最新价：盘前为昨收，12:00 前为开盘价，之后为收盘价。"""
+        """当前时刻的最新价：盘前为昨收，其余同成交价。"""
         if self.minute is None or self.minute < OPEN:
             return self.bar('pre_close', code)
-        return self.bar('open' if self.minute < NOON else 'close', code)
+        return self.trade_price(code)
+
+    def trade_price(self, code):
+        """当前时刻的成交价：开盘及之前为开盘价，收盘为收盘价，盘中为该分钟的收盘价（没有分钟数据时近似）。"""
+        m = self.minute
+        if m is None or m <= OPEN:
+            return self.bar('open', code)
+        if m >= CLOSE:
+            return self.bar('close', code)
+        price = self.minute_price(code)
+        if price is not None:
+            return price
+        return self.bar('open' if m < NOON else 'close', code)
+
+    def minute_price(self, code):
+        k = minute_data.point_index(self.minute)
+        got = self.minutes.day(code, self.today) if k >= 0 else None
+        if got is None:
+            if k >= 0:
+                self.warn_once('no-minute', f'{code} 等股票在 {self.today} 等日期没有分钟数据，盘中时刻按开盘/收盘价近似撮合')
+            return None
+        return float(got[0][k])
 
     def security_name(self, code):
         if code in self.securities.index:
@@ -378,7 +407,7 @@ class Backtest:
             return self._reject(code, '当日未上市或已退市')
         if self.bar('paused', code):
             return self._reject(code, '停牌')
-        price = self.bar('open' if self.minute < NOON else 'close', code)
+        price = self.trade_price(code)
         high, low = self.bar('high_limit', code), self.bar('low_limit', code)
         is_buy = amount > 0
         if is_buy and not math.isnan(high) and price >= high - 1e-6:
@@ -507,7 +536,7 @@ class Backtest:
             return self._reject(code, '只能在盘前至收盘之间下单')
         if code not in self.panel.col:
             return self._reject(code, '没有该证券的数据')
-        price = self.bar('open' if self.minute < NOON else 'close', code)
+        price = self.trade_price(code)
         if math.isnan(price) or price <= 0:
             return self._reject(code, '当日没有行情')
         return price
@@ -550,6 +579,7 @@ class Backtest:
         while self._pending and self._pending[0][0] <= until:
             minute, _, kind, func, arg, force = self._pending.pop(0)
             self.minute = minute
+            self.context.current_dt = self.now()
             if func == '__handle_data__':
                 handle_data(self.context, data)
             elif kind in ('callback',):
@@ -580,12 +610,17 @@ class Backtest:
                 pos.closeable_amount = pos.total_amount
                 pos.today_amount = 0
             self.orders_today, self.trades_today = {}, {}
+            bar_minutes = minute_data.POINT_MINUTE if self.frequency == 'minute' else [OPEN]
             pending = []
             if callable(before):
                 pending.append((BEFORE_OPEN, -1, 'callback', before, None, False))
-            pending += [e for e in self.events]
+            for e in self.events:
+                if e[0] == EVERY_BAR:
+                    pending += [(int(m), *e[1:]) for m in bar_minutes]
+                else:
+                    pending.append(e)
             if callable(handle_data):
-                pending.append((OPEN, 1 << 30, 'daily', '__handle_data__', None, False))
+                pending += [(int(m), 1 << 30, 'daily', '__handle_data__', None, False) for m in bar_minutes]
             if callable(after):
                 pending.append((AFTER_CLOSE, 1 << 30, 'callback', after, None, False))
             self._pending = sorted(pending, key=lambda e: (e[0], e[1]))
@@ -708,7 +743,7 @@ def metrics(values, capital, bench, bench_base, dates):
 
 
 class _Bar:
-    """handle_data 的 data[security]：前一交易日的日线（避免未来函数）。"""
+    """handle_data 的 data[security]：日级为前一交易日的日线，分钟级为刚走完的一分钟 K 线（避免未来函数）。"""
 
     def __init__(self, bt, code):
         r = bt.r - 1
@@ -717,6 +752,16 @@ class _Bar:
                   'pre_close'):
             setattr(self, f, bt.bar(f, code, r) if r >= 0 else np.nan)
         self.paused = bool(bt.bar('paused', code, r)) if r >= 0 else True
+        k = minute_data.point_index(bt.minute) if bt.frequency == 'minute' and bt.minute is not None else -1
+        got = bt.minutes.day(code, bt.today) if k >= 0 and not bt.bar('paused', code) else None
+        if got is not None:
+            bars = minute_data.bars_for_day(*got, bt.bar('open', code))
+            for f in ('open', 'close', 'high', 'low', 'volume', 'money'):
+                setattr(self, f, float(bars[f][k]))
+            self.pre_close = float(bars['open'][k])
+            for f in ('factor', 'high_limit', 'low_limit'):
+                setattr(self, f, bt.bar(f, code))
+            self.paused = False
         self.avg = self.money / self.volume if self.volume else np.nan
         self.price = self.avg
 
@@ -742,6 +787,13 @@ class _BarData(dict):
     def __init__(self, bt):
         super().__init__()
         self._bt = bt
+        self._minute = bt.minute
+
+    def __getitem__(self, key):
+        if self._bt.minute != self._minute:  # 分钟级每分钟的数据不同
+            self.clear()
+            self._minute = self._bt.minute
+        return super().__getitem__(key)
 
     def __missing__(self, key):
         code = normalize_code(key)

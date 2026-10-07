@@ -68,7 +68,7 @@ const jobs = ref([])
 const selected = ref(null) // 任务 id；null 表示新建
 const job = ref(null)
 const loadingJob = ref(false)
-const form = ref({ name: '我的策略', range: null, capital: 1000000, benchmark: '000300.XSHG', code: TEMPLATE })
+const form = ref({ name: '我的策略', range: null, capital: 1000000, benchmark: '000300.XSHG', frequency: 'day', code: TEMPLATE })
 const report = ref(null)
 const submitting = ref(false)
 const fileInput = ref(null)
@@ -77,6 +77,11 @@ let timer = null
 
 const benchmarks = computed(() => (status.value?.benchmarks || []).map((b) => ({ label: `${b.name} ${b.code}`, value: b.code })))
 const dataRange = computed(() => status.value?.data)
+const frequencies = computed(() => [
+  { label: '日级：handle_data 每天 9:30', value: 'day' },
+  { label: '分钟级：handle_data 每分钟', value: 'minute', disabled: !dataRange.value?.minute },
+])
+const FREQ_LABELS = { day: '日级', minute: '分钟级' }
 const blocker = computed(() => {
   const s = status.value
   if (!s) return ''
@@ -168,7 +173,7 @@ async function submit() {
   try {
     const [start, end] = form.value.range
     const res = await api.quantSubmit({ name: form.value.name, code: form.value.code, start, end,
-      capital: form.value.capital, benchmark: form.value.benchmark })
+      capital: form.value.capital, benchmark: form.value.benchmark, frequency: form.value.frequency })
     report.value = res.check
     if (!res.job) return message.error('策略有错误，请先修改')
     message.success('已提交回测')
@@ -183,7 +188,7 @@ async function submit() {
 
 function copyToEditor() {
   form.value = { name: `${job.value.name} 副本`, range: [job.value.start, job.value.end], capital: job.value.capital,
-    benchmark: job.value.benchmark, code: job.value.code }
+    benchmark: job.value.benchmark, frequency: job.value.frequency || 'day', code: job.value.code }
   report.value = null
   select(null)
 }
@@ -278,7 +283,8 @@ loadJobs()
   <div class="page quant">
     <div class="toolbar">
       <h1>聚宽策略回测</h1><GuideButton id="quant" />
-      <span v-if="dataRange?.ready" class="muted small">数据 {{ dataRange.start }} ~ {{ dataRange.end }}</span>
+      <span v-if="dataRange?.ready" class="muted small">日线 {{ dataRange.start }} ~ {{ dataRange.end }}</span>
+      <span v-if="dataRange?.minute" class="muted small">分钟线 {{ dataRange.minute.start }} ~ {{ dataRange.minute.end }}</span>
     </div>
     <PageGuide id="quant" />
     <div v-if="blocker" class="card notice">{{ blocker }}</div>
@@ -315,9 +321,10 @@ loadJobs()
             </NInputNumber>
           </label>
           <label><span>基准</span><NSelect v-model:value="form.benchmark" :options="benchmarks" size="small" /></label>
+          <label><span>频率</span><NSelect v-model:value="form.frequency" :options="frequencies" size="small" /></label>
         </div>
         <div class="code-head">
-          <span class="muted small">粘贴聚宽策略代码，或导入 .py 文件。只支持日线回测，财务、行业与分钟数据暂不可用。</span>
+          <span class="muted small">粘贴聚宽策略代码，或导入 .py 文件。盘中时刻按分钟价撮合（需已同步分钟数据），财务与行业数据暂不可用。</span>
           <span class="spacer" />
           <input ref="fileInput" type="file" accept=".py,.txt" hidden @change="importFile" />
           <NButton size="small" @click="fileInput.click()">导入文件</NButton>
@@ -345,7 +352,7 @@ loadJobs()
                 <NButton size="small" @click="remove(job)">{{ active ? '取消' : '删除' }}</NButton>
               </div>
               <div class="muted small">
-                {{ job.start }} ~ {{ job.end }} · 初始资金 {{ job.capital.toLocaleString() }} 元 · 基准 {{ job.benchmark }}
+                {{ job.start }} ~ {{ job.end }} · {{ FREQ_LABELS[job.frequency || 'day'] }} · 初始资金 {{ job.capital.toLocaleString() }} 元 · 基准 {{ job.benchmark }}
                 · 提交于 {{ job.created }}<template v-if="job.status.elapsed"> · 用时 {{ job.status.elapsed }} 秒</template>
               </div>
               <div v-if="active" class="progress">
@@ -426,7 +433,7 @@ loadJobs()
 .job-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .editor { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
-.form { display: grid; grid-template-columns: 1.2fr 1.6fr 1fr 1.2fr; gap: 10px; }
+.form { display: grid; grid-template-columns: 1.1fr 1.6fr 1fr 1.2fr 1.3fr; gap: 10px; }
 .form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .code-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .spacer { flex: 1; }
@@ -456,7 +463,7 @@ loadJobs()
 .plain-table .l { text-align: left; }
 .logs { margin: 0; padding: 12px 14px; max-height: 520px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 @media (max-width: 1100px) {
-  .form { grid-template-columns: 1fr 1fr; }
+  .form { grid-template-columns: 1fr 1fr 1fr; }
   .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 767px) {

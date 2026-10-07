@@ -215,6 +215,16 @@ def _sync_quant():
         data.sync()
     except Exception:
         log.exception('回测数据同步失败')
+        return
+    covered = store.load_state().get('minute')
+    if covered:  # 已回补过分钟数据：补最近一个月（含之前失败的日期）
+        from instock.quant import minute
+        recent = (datetime.date.fromisoformat(covered['end']) - datetime.timedelta(days=30)).isoformat()
+        try:
+            minute.sync(covered['scope'] if covered['scope'] in ('index', 'all') else 'index',
+                        max(covered['start'], recent), config.QUANT_MINUTE_CONNECTIONS)
+        except Exception:
+            log.exception('分钟数据同步失败')
 
 
 def parse_days(args):

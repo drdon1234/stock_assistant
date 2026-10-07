@@ -74,7 +74,7 @@ def data_status():
     state = store.load_state()
     return {'ready': bool(state.get('ready')) and (store.root() / 'panel' / 'codes.json').is_file(),
             'start': state.get('start'), 'end': state.get('last_date'), 'synced_at': state.get('synced_at'),
-            'securities': state.get('securities')}
+            'securities': state.get('securities'), 'minute': state.get('minute')}
 
 
 def can_run(user):
@@ -122,6 +122,11 @@ def create_job(user, data):
     benchmark = str(data.get('benchmark') or '000300.XSHG')
     if benchmark not in INDEXES:
         raise JobError('不支持的基准指数')
+    frequency = str(data.get('frequency') or 'day')
+    if frequency not in ('day', 'minute'):
+        raise JobError('回测频率只能是 day 或 minute')
+    if frequency == 'minute' and not status['minute']:
+        raise JobError('还没有分钟数据：请管理员先运行 python -m instock quant sync-minute')
     active = [j for j in list_jobs(user['username']) if j['status']['state'] in ('queued', 'running')]
     if len(active) >= MAX_ACTIVE_PER_USER:
         raise JobError(f'每个账号最多同时排队 {MAX_ACTIVE_PER_USER} 个回测')
@@ -132,7 +137,7 @@ def create_job(user, data):
     folder.mkdir(mode=0o700)
     meta = {'id': job_id, 'user': user['username'], 'name': str(data.get('name') or '未命名策略')[:60],
             'start': max(start, first).isoformat(), 'end': min(end, last).isoformat(), 'capital': capital,
-            'benchmark': benchmark, 'created': now.isoformat(' ', 'seconds')}
+            'benchmark': benchmark, 'frequency': frequency, 'created': now.isoformat(' ', 'seconds')}
     (folder / 'strategy.py').write_text(code, encoding='utf-8')
     _write_json(folder / 'meta.json', meta)
     _write_json(folder / 'status.json', {'state': 'queued'})
@@ -224,7 +229,7 @@ class _Running:
         self.proc = subprocess.Popen([sys.executable, '-m', 'instock.quant.child'], stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.workdir, env=env,
                                      **kwargs)
-        request = {k: self.meta[k] for k in ('start', 'end', 'capital', 'benchmark')}
+        request = {k: self.meta.get(k) for k in ('start', 'end', 'capital', 'benchmark', 'frequency')}
         request['code'] = (folder / 'strategy.py').read_text(encoding='utf-8')
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._stderr = []

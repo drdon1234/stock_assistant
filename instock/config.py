@@ -53,8 +53,10 @@ HIST_YEARS = _env_int('INSTOCK_HIST_YEARS', 3)
 
 # 聚宽兼容回测：历史数据（不复权日线、复权因子、停牌、ST、指数成分）与回测任务都放在 QUANT_DIR
 QUANT_DIR = DATA_DIR / 'quant'
-QUANT_START = os.environ.get('INSTOCK_QUANT_START', '2005-01-01')  # 回补历史数据的起始日期
+QUANT_START = os.environ.get('INSTOCK_QUANT_START') or '2005-01-01'  # 回补历史数据的起始日期
 QUANT_WORKERS = _env_int('INSTOCK_QUANT_WORKERS', 4)  # 回补时同时连接 BaoStock 的进程数
+QUANT_MINUTE_START = os.environ.get('INSTOCK_QUANT_MINUTE_START') or '2015-01-01'  # 分钟数据回补起始日期
+QUANT_MINUTE_CONNECTIONS = _env_int('INSTOCK_QUANT_MINUTE_CONNECTIONS', 8)  # 同时连接通达信服务器的数量
 QUANT_TIMEOUT = _env_int('INSTOCK_QUANT_TIMEOUT', 1800)  # 单个回测最长运行秒数
 QUANT_MEMORY_MB = _env_int('INSTOCK_QUANT_MEMORY_MB', 3072)  # 沙箱中单个回测进程的内存上限
 # 回测运行器是否以沙箱方式执行策略代码（docker-compose 的 instock-backtest 容器中为 1）。

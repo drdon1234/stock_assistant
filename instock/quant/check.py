@@ -11,6 +11,7 @@ _PROVIDED = {'jqdata', 'kuanke', 'kuanke.user_space_api'}
 _FREQ_ARGS = {'get_price': ('frequency', 3), 'history': ('unit', 1), 'attribute_history': ('unit', 2),
               'get_bars': ('unit', 2)}
 _DAILY = {'daily', '1d', 'day', 'd'}
+_MINUTE = {'1m', 'minute', '5m', '15m', '30m', '60m', '120m'}
 
 
 def _literal(node):
@@ -67,8 +68,10 @@ def check(code):
             fn = node.func.id
             if fn in _FREQ_ARGS:
                 value = _literal(_arg(node, *_FREQ_ARGS[fn]) or ast.Constant(None))
-                if isinstance(value, str) and value.lower() not in _DAILY:
-                    warn(node, f'{fn} 使用了 {value} 频率，只支持日线，运行到这里会报错')
+                if isinstance(value, str) and value.lower() in _MINUTE:
+                    warn(node, f'{fn} 使用了 {value} 分钟线：需要服务器已同步分钟数据（没有的日期会缺失）', notes)
+                elif isinstance(value, str) and value.lower() not in _DAILY:
+                    warn(node, f'{fn} 使用了 {value} 周期，只支持日线与 1m/5m/15m/30m/60m/120m，运行到这里会报错')
             elif fn == 'run_daily' or fn in ('run_weekly', 'run_monthly'):
                 pos = 1 if fn == 'run_daily' else 2
                 value = _literal(_arg(node, 'time', pos) or ast.Constant('9:30'))
@@ -78,7 +81,7 @@ def check(code):
                     except engine.StrategyError as e:
                         warn(node, str(e))
                         continue
-                    if minute not in (engine.BEFORE_OPEN, engine.OPEN, engine.CLOSE, engine.AFTER_CLOSE):
+                    if minute not in (engine.BEFORE_OPEN, engine.OPEN, engine.CLOSE, engine.AFTER_CLOSE)                             and value.strip().lower() != 'every_bar':
                         price = '开盘价' if minute < engine.NOON else '收盘价'
-                        warn(node, f'{fn} 的时间 {value}：日线回测没有分钟数据，按当天{price}撮合', notes)
+                        warn(node, f'{fn} 的时间 {value}：按该分钟的收盘价撮合；没有分钟数据的日期按当天{price}近似', notes)
     return {'errors': errors, 'warnings': warnings, 'notes': notes}

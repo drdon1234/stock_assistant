@@ -38,14 +38,14 @@ def _user_trace(exc, code):
     return out
 
 
-def run_strategy(code, start, end, capital, benchmark='000300.XSHG', progress=None):
+def run_strategy(code, start, end, capital, benchmark='000300.XSHG', progress=None, frequency='day'):
     """执行策略并返回结果；策略出错时抛出 StrategyFailure（含出错行与已有日志）。"""
     from instock.quant import engine, jqapi, store
 
     bt = None
     try:
         bt = engine.Backtest(store.Panel(), store.load_securities(), store.load_members(), store.load_trade_days(),
-                             start, end, capital, benchmark, progress)
+                             start, end, capital, benchmark, progress, frequency)
         ns = jqapi.Api(bt).namespace()
         jqapi.install_modules(ns)
         ns['__name__'] = 'strategy'
@@ -74,7 +74,8 @@ def main():
         result = run_strategy(request['code'], request['start'], request['end'], request['capital'],
                               request.get('benchmark') or '000300.XSHG',
                               lambda p, day: send({'type': 'progress', 'progress': round(p, 4),
-                                                   'date': day.isoformat()}))
+                                                   'date': day.isoformat()}),
+                              request.get('frequency') or 'day')
         send({'type': 'result', 'result': result})
     except StrategyFailure as e:
         send({'type': 'error', 'message': e.message, 'traceback': e.trace, 'logs': e.logs[-500:]})

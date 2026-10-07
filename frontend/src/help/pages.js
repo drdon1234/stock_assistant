@@ -128,9 +128,10 @@ export const PAGE_GUIDES = {
     summary: '把在聚宽（JoinQuant）写好的策略代码直接粘贴或导入，在本服务器的历史数据上做日线回测，得到收益曲线、风险指标与逐笔交易。',
     points: [
       '支持 initialize、run_daily/run_weekly/run_monthly、handle_data、order 系列下单函数、get_price/history/attribute_history/get_bars、get_current_data、get_index_stocks（沪深300/上证50/中证500）等常用 API。',
-      '只有日线数据：开盘（9:30）按开盘价成交，12:00 之后的时刻（如 14:50）按收盘价成交；history 等行情函数不含当天，避免未来函数。',
+      '9:30 按开盘价、15:00 按收盘价成交；盘中时刻（如 14:50）按该分钟的收盘价成交（服务器需已同步分钟数据，没有时 12:00 前按开盘价、之后按收盘价近似）。行情函数只返回当前时刻之前走完的 K 线，避免未来函数。',
+      '频率选“分钟级”时 handle_data 每分钟调用一次；get_price/history/attribute_history/get_bars 支持 1m/5m/15m/30m/60m/120m 分钟线（由分时数据构成：每分钟收盘价与成交量准确，开高低为近似）。',
       '按 A 股规则撮合：T+1、整手买入、停牌不能交易、涨停买不进、跌停卖不出、成交量上限；默认佣金万三（最低 5 元）与历年印花税；分红送转自动处理。',
-      '暂不支持财务数据（get_fundamentals）、行业概念、分钟线与期货。提交前可点“检查兼容性”，列出代码中不支持的调用。',
+      '暂不支持财务数据（get_fundamentals）、行业概念、tick 与期货。提交前可点“检查兼容性”，列出代码中不支持的调用。',
       'Docker 部署时策略代码在隔离的沙箱容器中运行，无法访问网络、数据库和其他人的策略；未启用沙箱时只有管理员可以提交回测。',
     ],
     learn: 'backtest',

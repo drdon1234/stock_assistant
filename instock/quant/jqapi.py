@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from instock.quant import engine
+from instock.quant import minute
 from instock.quant.engine import NotSupported, StrategyError, normalize_code, to_date
 
 _DEFAULT_FIELDS = ['open', 'close', 'high', 'low', 'volume', 'money']
@@ -133,9 +134,33 @@ def _as_list(value):
     return list(value)
 
 
-def _check_daily(frequency):
-    if str(frequency).lower() not in ('daily', '1d', 'day', 'd'):
-        raise NotSupported(f'暂不支持 {frequency} 频率的数据：只有日线（daily / 1d）')
+_MINUTE_UNITS = {'1m': 1, 'minute': 1, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '120m': 120}
+_MINUTE_FIELDS = {'open', 'close', 'high', 'low', 'volume', 'money', 'avg', 'price', 'factor', 'high_limit',
+                  'low_limit', 'paused'}
+
+
+def _bar_minutes(unit):
+    """日线返回 None，分钟线返回每根 K 线包含的分钟数。"""
+    text = str(unit).lower()
+    if text in ('daily', '1d', 'day', 'd'):
+        return None
+    if text in _MINUTE_UNITS:
+        return _MINUTE_UNITS[text]
+    raise NotSupported(f'暂不支持 {unit} 周期：可用 daily/1d 与 1m/5m/15m/30m/60m/120m')
+
+
+def _aggregate(frame, k):
+    """把一天的 1 分钟 K 线合成为 k 分钟（按 09:31、13:01 起对齐，只保留走完的 K 线），索引为每根的结束时刻。"""
+    groups = np.arange(len(frame)) // k
+    complete = np.bincount(groups) == k
+    frame = frame[complete[groups]]
+    if frame.empty:
+        return frame
+    groups = groups[complete[groups]]
+    out = frame.groupby(groups).agg(open=('open', 'first'), close=('close', 'last'), high=('high', 'max'),
+                                    low=('low', 'min'), volume=('volume', 'sum'), money=('money', 'sum'))
+    out.index = frame.index[k - 1::k]
+    return out
 
 
 class Api:
@@ -205,14 +230,104 @@ class Api:
     def _ref_row(self):
         return self.bt.r
 
+    # ---------- 分钟线 ----------
+
+    def _minute_cursor(self, end_dt=None):
+        """(行号, 当天最后一个可见的分时点序号)，序号为 None 表示当天全部可见。只能看到当前时刻之前走完的 K 线。"""
+        bt = self.bt
+        m = bt.minute
+        if m is None or m < engine.OPEN:
+            cursor = (bt.r - 1, None)
+        elif m >= engine.CLOSE:
+            cursor = (bt.r, None)
+        else:
+            k = minute.point_index(m)
+            cursor = (bt.r, k) if k >= 0 else (bt.r - 1, None)
+        if end_dt is not None:
+            ts = pd.Timestamp(end_dt)
+            row = self.panel.row(ts.date())
+            if row >= 0 and pd.Timestamp(self.panel.dates[row]).date() == ts.date():
+                # 只有日期时为当天 00:00，不含当天（与聚宽一致）
+                k = minute.point_index(ts.hour * 60 + ts.minute)
+                end = (row, None if k >= minute.MINUTES - 1 else k) if k >= 0 else (row - 1, None)
+            else:
+                end = (row, None)
+            key = lambda c: (c[0], minute.MINUTES if c[1] is None else c[1])  # noqa: E731
+            cursor = min(cursor, end, key=key)
+        return cursor
+
+    def _minute_frame(self, code, count, fields, fq, k, cursor, start=None):
+        """截至 cursor 往前 count 根（或从 start 起）的 k 分钟 K 线，索引为每根 K 线的结束时刻。"""
+        bt, p = self.bt, self.panel
+        unknown = [f for f in fields if f not in _MINUTE_FIELDS]
+        if unknown:
+            raise StrategyError(f'分钟线不支持字段：{", ".join(unknown)}')
+        row, last = cursor
+        col = [p.col.get(code, -1)]
+        ref = self._ref_row()
+        frames, total = [], 0
+        while row >= 0 and (count is None or total < count):
+            day = pd.Timestamp(p.dates[row]).date()
+            if start is not None and day < start.date():
+                break
+            if p.block('paused', row, row + 1, col)[0, 0] == 0:
+                frame = minute.frame_for_day(bt.minutes, code, day, p.value('open', row, code))
+                if frame is None:
+                    bt.warn_once('no-minute-bars', f'{code} 等股票在 {day} 等日期没有分钟数据，分钟线中缺少这些日期')
+                else:
+                    frame = frame.iloc[:minute.MINUTES if last is None else last + 1]
+                    if k > 1:
+                        frame = _aggregate(frame, k)
+                    factor = p.value('factor', row, code)
+                    if fq == 'pre':
+                        scale = factor / p.value('factor', ref, code)
+                    elif fq == 'post':
+                        scale = factor
+                    else:
+                        scale = 1.0
+                    frame = frame.assign(**{f: frame[f] * scale for f in ('open', 'close', 'high', 'low')},
+                                         volume=frame['volume'] / scale)
+                    with np.errstate(invalid='ignore', divide='ignore'):
+                        frame['avg'] = np.where(frame['volume'] > 0, frame['money'] / frame['volume'], frame['close'])
+                    frame['price'] = frame['avg']
+                    frame['factor'] = scale if fq in ('pre', 'post') else 1.0
+                    frame['high_limit'] = p.value('high_limit', row, code) * scale
+                    frame['low_limit'] = p.value('low_limit', row, code) * scale
+                    frame['paused'] = 0.0
+                    frames.append(frame)
+                    total += len(frame)
+            row, last = row - 1, None
+        if not frames:
+            return pd.DataFrame(columns=fields, index=pd.DatetimeIndex([]), dtype=float)
+        out = pd.concat(frames[::-1])
+        if start is not None:
+            out = out[out.index >= start]
+        if count is not None:
+            out = out.tail(int(count))
+        return out[fields]
+
     # ---------- 行情：聚宽函数 ----------
 
     def get_price(self, security, start_date=None, end_date=None, frequency='daily', fields=None, skip_paused=False,
                   fq='pre', count=None, panel=True, fill_paused=True, df=True, round=True):
-        _check_daily(frequency)
+        k = _bar_minutes(frequency)
         single = isinstance(security, str)
         codes = [normalize_code(c) for c in _as_list(security)]
         one_field = isinstance(fields, str)
+        if k:
+            if (start_date is None) == (count is None):
+                raise StrategyError('需要指定 start_date 或 count 之一')
+            fields = _as_list(fields) or _DEFAULT_FIELDS
+            start = pd.Timestamp(start_date) if start_date is not None else None
+            cursor = self._minute_cursor(end_date)
+            frames = {c: self._minute_frame(c, count, fields, fq, k, cursor, start) for c in codes}
+            if single:
+                return frames[codes[0]]
+            if not panel:
+                parts = [f.assign(code=c).rename_axis('time').reset_index() for c, f in frames.items()]
+                return pd.concat(parts, ignore_index=True)[['time', 'code', *fields]]
+            out = {f: pd.DataFrame({c: frames[c][f] for c in codes}) for f in fields}
+            return out[fields[0]] if one_field else FieldPanel(out)
         fields = self._fields(fields, _DEFAULT_FIELDS)
         r0, r1 = self._range(start_date, end_date, count, self.bt.visible_row())
         cols = self.panel.cols(codes)
@@ -252,9 +367,13 @@ class Api:
         return pd.DataFrame(data, index=pd.DatetimeIndex(self.panel.dates[rows]))
 
     def history(self, count, unit='1d', field='avg', security_list=None, df=True, skip_paused=False, fq='pre'):
-        _check_daily(unit)
+        k = _bar_minutes(unit)
         codes = security_list if security_list is not None else self.bt.context.universe
         codes = [normalize_code(c) for c in _as_list(codes)]
+        if k:
+            cursor = self._minute_cursor()
+            series = {c: self._minute_frame(c, int(count), [field], fq, k, cursor)[field] for c in codes}
+            return pd.DataFrame(series) if df else {c: v.to_numpy() for c, v in series.items()}
         field = self._fields(field, None)[0]
         r1 = self.bt.r  # 不含当天
         r0 = max(r1 - int(count), 0)
@@ -271,8 +390,12 @@ class Api:
 
     def attribute_history(self, security, count, unit='1d', fields=('open', 'close', 'high', 'low', 'volume', 'money'),
                           skip_paused=True, df=True, fq='pre'):
-        _check_daily(unit)
+        k = _bar_minutes(unit)
         code = normalize_code(security)
+        if k:
+            fields = _as_list(fields)
+            frame = self._minute_frame(code, int(count), fields, fq, k, self._minute_cursor())
+            return frame if df else {f: frame[f].to_numpy() for f in fields}
         fields = self._fields(list(fields) if not isinstance(fields, str) else fields, None)
         r1 = self.bt.r
         if skip_paused:
@@ -284,13 +407,24 @@ class Api:
 
     def get_bars(self, security, count, unit='1d', fields=('date', 'open', 'high', 'low', 'close'), include_now=False,
                  end_dt=None, fq_ref_date=None, df=False):
-        _check_daily(unit)
+        k = _bar_minutes(unit)
         if not isinstance(security, str):
             bars = {normalize_code(s): self.get_bars(s, count, unit, fields, include_now, end_dt, fq_ref_date, df)
                     for s in security}
             return pd.concat(bars, names=['code', None]) if df else bars
         code = normalize_code(security)
         fields = [fields] if isinstance(fields, str) else list(fields)
+        if k:
+            values = [f for f in fields if f != 'date']
+            frame = self._minute_frame(code, int(count), values, 'pre' if fq_ref_date is not None else None, k,
+                                       self._minute_cursor(end_dt))
+            stamps = np.array([ts.to_pydatetime() for ts in frame.index], dtype=object)
+            if df:
+                return frame.assign(date=stamps)[fields].reset_index(drop=True)
+            arr = np.empty(len(frame), dtype=[(f, 'O' if f == 'date' else 'f8') for f in fields])
+            for f in fields:
+                arr[f] = stamps if f == 'date' else frame[f].to_numpy()
+            return arr
         end_row = self.bt.visible_row() if include_now else self.bt.r - 1
         if end_dt is not None:
             end_row = min(end_row, self.panel.row(to_date(end_dt)))
@@ -421,8 +555,8 @@ class Api:
     def _schedule(self, kind, func, n, time_, force):
         if not callable(func):
             raise StrategyError('定时任务的第一个参数必须是函数')
-        minute = engine.parse_time(time_)
-        self.bt.events.append((minute, len(self.bt.events), kind, func, n, force))
+        at = engine.EVERY_BAR if str(time_).strip().lower() == 'every_bar' else engine.parse_time(time_)
+        self.bt.events.append((at, len(self.bt.events), kind, func, n, force))
 
     def run_daily(self, func, time='9:30', reference_security='000300.XSHG'):
         self._schedule('daily', func, None, time, False)
