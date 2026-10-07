@@ -20,6 +20,9 @@ import tornado.web
 from instock import __version__, auth, config, db, history, net, schema
 from instock.analysis import indicators, patterns
 from instock.analysis.strategies import BY_KEY, STRATEGIES
+from instock.quant import check as quant_check
+from instock.quant import runner as quant
+from instock.sources.baostock import INDEXES
 
 log = logging.getLogger(__name__)
 
@@ -524,6 +527,50 @@ class UsersHandler(ApiHandler):
         self.send({'ok': True})
 
 
+class QuantStatusHandler(ApiHandler):
+    """聚宽回测：数据范围、运行器状态、当前账号能否提交。"""
+
+    async def get(self):
+        user = self.current_user
+        payload = await self.call(lambda: {'data': quant.data_status(), 'runner': quant.runner_status(),
+                                           'can_run': quant.can_run(user)})
+        self.send({**payload, 'benchmarks': [{'code': c, 'name': n} for c, n in INDEXES.items()]})
+
+
+class QuantCheckHandler(ApiHandler):
+    async def post(self):
+        code = str(self.json_body().get('code') or '')
+        if len(code.encode('utf-8')) > quant.MAX_CODE_BYTES:
+            raise tornado.web.HTTPError(400, '策略代码过长')
+        self.send(await self.call(quant_check.check, code))
+
+
+class QuantJobsHandler(ApiHandler):
+    """GET 列出自己的回测（管理员加 all=1 看全部）；POST 提交回测；GET/DELETE /<id> 查看、取消或删除。"""
+
+    async def call_job(self, fn, *args):
+        try:
+            return await self.call(fn, *args)
+        except quant.JobError as e:
+            raise tornado.web.HTTPError(400, str(e)) from None
+
+    async def get(self, job_id=None):
+        if job_id:
+            self.send(await self.call_job(quant.get_job, job_id, self.current_user))
+            return
+        everyone = self.current_user['admin'] and self.get_argument('all', '') == '1'
+        self.send({'items': await self.call(quant.list_jobs, None if everyone else self.username)})
+
+    async def post(self, job_id=None):
+        job, report = await self.call_job(quant.create_job, self.current_user, self.json_body())
+        if job:
+            log.info('账号 %s 提交回测 %s：%s', self.username, job['id'], job['name'])
+        self.send({'job': job, 'check': report})
+
+    async def delete(self, job_id):
+        self.send({'result': await self.call_job(quant.remove_job, job_id, self.current_user)})
+
+
 class NotFoundHandler(ApiHandler):
     def prepare(self):
         raise tornado.web.HTTPError(404, '接口不存在')
@@ -562,6 +609,10 @@ def make_app():
         (r'/api/auth/password', PasswordHandler),
         (r'/api/users', UsersHandler),
         (r'/api/users/([a-z0-9_.-]{1,32})', UsersHandler),
+        (r'/api/quant/status', QuantStatusHandler),
+        (r'/api/quant/check', QuantCheckHandler),
+        (r'/api/quant/jobs', QuantJobsHandler),
+        (r'/api/quant/jobs/([0-9a-f]{20})', QuantJobsHandler),
         (r'/api/.*', NotFoundHandler),
         (r'/assets/(.*)', tornado.web.StaticFileHandler, {'path': DIST_DIR / 'assets'}),
         (r'/(favicon\.svg)', tornado.web.StaticFileHandler, {'path': DIST_DIR}),

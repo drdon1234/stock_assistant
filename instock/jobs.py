@@ -41,6 +41,7 @@ TASKS = (
     Task('chip_end', '尾盘抢筹', after_close=True),
     Task('analysis', '指标/形态/策略分析', after_close=True),
     Task('backtest', '策略回测', after_close=True),
+    Task('quant', '回测数据', after_close=True),  # 首次回补完成（quant sync）后才每日增量更新
 )
 TASK_KEYS = tuple(t.key for t in TASKS)
 REALTIME_KEYS = ('spot', 'etf')  # 盘中定时刷新的任务
@@ -180,7 +181,7 @@ def run(days=None, keys=TASK_KEYS):
             continue
         todo = []
         for task in TASKS:
-            if task.key not in keys or task.key in ('analysis', 'backtest'):
+            if task.key not in keys or task.key in ('analysis', 'backtest', 'quant'):
                 continue
             if task.realtime and day != current:
                 log.info('%s 只能获取当前数据，跳过 %s', task.name, day)
@@ -201,7 +202,19 @@ def run(days=None, keys=TASK_KEYS):
     if 'backtest' in keys:
         backtest.update_pending()
         backtest.update_benchmark()
+    if 'quant' in keys and days[-1] <= closed:
+        _sync_quant()
     log.info('作业完成：%s，耗时 %.0f 秒', ', '.join(map(str, days)), time.monotonic() - started)
+
+
+def _sync_quant():
+    from instock.quant import data, store
+    if not store.load_state().get('ready'):
+        return  # 首次回补耗时数小时，需手动运行 python -m instock quant sync
+    try:
+        data.sync()
+    except Exception:
+        log.exception('回测数据同步失败')
 
 
 def parse_days(args):

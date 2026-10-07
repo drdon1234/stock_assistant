@@ -41,4 +41,10 @@ export const api = {
   createUser: (data) => send('POST', '/api/users', data),
   updateUser: (name, data) => send('PUT', `/api/users/${name}`, data),
   deleteUser: (name) => send('DELETE', `/api/users/${name}`),
+  quantStatus: () => request('/api/quant/status'),
+  quantCheck: (code) => send('POST', '/api/quant/check', { code }),
+  quantJobs: () => request('/api/quant/jobs'),
+  quantJob: (id) => request(`/api/quant/jobs/${id}`),
+  quantSubmit: (data) => send('POST', '/api/quant/jobs', data),
+  quantRemove: (id) => send('DELETE', `/api/quant/jobs/${id}`),
 }

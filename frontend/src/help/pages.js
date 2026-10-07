@@ -124,6 +124,17 @@ export const PAGE_GUIDES = {
     ],
     learn: 'strategies',
   },
+  quant: {
+    summary: '把在聚宽（JoinQuant）写好的策略代码直接粘贴或导入，在本服务器的历史数据上做日线回测，得到收益曲线、风险指标与逐笔交易。',
+    points: [
+      '支持 initialize、run_daily/run_weekly/run_monthly、handle_data、order 系列下单函数、get_price/history/attribute_history/get_bars、get_current_data、get_index_stocks（沪深300/上证50/中证500）等常用 API。',
+      '只有日线数据：开盘（9:30）按开盘价成交，12:00 之后的时刻（如 14:50）按收盘价成交；history 等行情函数不含当天，避免未来函数。',
+      '按 A 股规则撮合：T+1、整手买入、停牌不能交易、涨停买不进、跌停卖不出、成交量上限；默认佣金万三（最低 5 元）与历年印花税；分红送转自动处理。',
+      '暂不支持财务数据（get_fundamentals）、行业概念、分钟线与期货。提交前可点“检查兼容性”，列出代码中不支持的调用。',
+      'Docker 部署时策略代码在隔离的沙箱容器中运行，无法访问网络、数据库和其他人的策略；未启用沙箱时只有管理员可以提交回测。',
+    ],
+    learn: 'backtest',
+  },
   attention: {
     summary: '你关注的股票及最新行情。关注的股票会在所有数据表中高亮显示，也可以在数据表中打开“只看关注”。',
     points: ['关注列表按账号保存在服务器数据库中，每个账号各自独立；用同一账号在其他设备登录同样可见。'],

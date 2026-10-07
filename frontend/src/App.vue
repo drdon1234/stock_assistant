@@ -40,6 +40,7 @@ const menuOptions = computed(() => [
   })),
   strategyGroup('buy'),
   strategyGroup('sell'),
+  { label: '聚宽策略回测', key: '/quant', icon: icon('target') },
   { label: '我的关注', key: '/attention', icon: icon('star') },
   { label: '学习中心', key: '/learn', icon: icon('book') },
 ])

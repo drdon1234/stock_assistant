@@ -51,6 +51,16 @@ ANALYSIS_WORKERS = _env_int('INSTOCK_WORKERS', max(1, (os.cpu_count() or 2) - 1)
 # 首次抓取历史 K 线的年数；之后按日增量追加
 HIST_YEARS = _env_int('INSTOCK_HIST_YEARS', 3)
 
+# 聚宽兼容回测：历史数据（不复权日线、复权因子、停牌、ST、指数成分）与回测任务都放在 QUANT_DIR
+QUANT_DIR = DATA_DIR / 'quant'
+QUANT_START = os.environ.get('INSTOCK_QUANT_START', '2005-01-01')  # 回补历史数据的起始日期
+QUANT_WORKERS = _env_int('INSTOCK_QUANT_WORKERS', 4)  # 回补时同时连接 BaoStock 的进程数
+QUANT_TIMEOUT = _env_int('INSTOCK_QUANT_TIMEOUT', 1800)  # 单个回测最长运行秒数
+QUANT_MEMORY_MB = _env_int('INSTOCK_QUANT_MEMORY_MB', 3072)  # 沙箱中单个回测进程的内存上限
+# 回测运行器是否以沙箱方式执行策略代码（docker-compose 的 instock-backtest 容器中为 1）。
+# 只有沙箱模式下普通账号才能提交回测；否则策略代码与服务同权限运行，仅管理员可用
+QUANT_SANDBOX = os.environ.get('INSTOCK_QUANT_SANDBOX', '').lower() in ('1', 'true', 'yes')
+
 
 def eastmoney_cookie():
     cookie = os.environ.get('EAST_MONEY_COOKIE', '').strip()

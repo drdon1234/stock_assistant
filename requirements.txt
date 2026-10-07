@@ -6,3 +6,4 @@ PyMySQL==1.2.3
 requests==2.34.2
 tornado==6.5.10
 mini-racer==0.14.1
+baostock==0.9.4

@@ -12,6 +12,8 @@ x-app: &app
     INSTOCK_ADMIN_USER: ${INSTOCK_ADMIN_USER:-}
     INSTOCK_ADMIN_PASSWORD: ${INSTOCK_ADMIN_PASSWORD:-}
     INSTOCK_TRUST_PROXY: ${INSTOCK_TRUST_PROXY:-}
+    INSTOCK_QUANT_START: ${INSTOCK_QUANT_START:-2005-01-01}
+    INSTOCK_QUANT_WORKERS: ${INSTOCK_QUANT_WORKERS:-}
     TZ: Asia/Shanghai
   volumes:
     - ${INSTOCK_HOME:-./data}/app:/data
@@ -46,3 +48,26 @@ services:
     <<: *app
     container_name: instock-worker
     command: ["python", "-m", "instock", "worker"]
+
+  # 聚宽策略回测运行器：执行网页提交的策略代码。隔离措施：无网络、无数据库凭证，只挂载回测数据目录，
+  # 策略在降权为 nobody 的子进程中运行（看不到其他任务的代码、不能写文件），并限制内存与进程数
+  instock-backtest:
+    image: ${INSTOCK_IMAGE:-drdon1234/stock_assistant:latest}
+    container_name: instock-backtest
+    restart: unless-stopped
+    command: ["python", "-m", "instock", "quant", "runner"]
+    environment:
+      INSTOCK_QUANT_SANDBOX: "1"
+      TZ: Asia/Shanghai
+    volumes:
+      - ${INSTOCK_HOME:-./data}/app/quant:/data/quant
+      - ${INSTOCK_HOME:-./data}/app/log:/data/log
+    tmpfs:
+      - /tmp
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    pids_limit: 256
