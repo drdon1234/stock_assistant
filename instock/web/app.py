@@ -139,9 +139,11 @@ class MetaHandler(ApiHandler):
         self.send({
             'version': __version__,
             'menu': [{'group': g, 'tables': items} for g, items in groups.items()],
-            'strategies': [{'key': s.key, 'name': s.name, 'kind': s.kind, 'rule': s.rule, 'source': s.source}
+            'strategies': [{'key': s.key, 'name': s.name, 'kind': s.kind, 'rule': s.rule, 'source': s.source,
+                            'plain': s.plain, 'tips': s.tips, 'basis': 'fundamental' if s.screen else 'technical'}
                            for s in STRATEGIES],
             'horizons': schema.RETURN_HORIZONS,
+            'patterns': [{'key': key, 'label': label} for key, label, _ in patterns.PATTERNS],
         })
 
 
@@ -152,11 +154,14 @@ class TableHandler(ApiHandler):
         self.send(payload)
 
 
-def _signals_payload(day):
+def _signals_payload(day, strategy=None):
     table = schema.SA_TABLES[schema.SIGNAL.name]
     dates = _dates(table)
     day = day or (dates[0] if dates else None)
-    columns, rows = db.query(sa.select(table).where(table.c.date == day)) if day else ([], [])
+    query = sa.select(table).where(table.c.date == day)
+    if strategy:
+        query = query.where(table.c.strategy == strategy)
+    columns, rows = db.query(query) if day else ([], [])
     return {'date': day, 'dates': dates,
             'columns': [{'name': c.name, 'label': c.label, 'fmt': c.fmt} for c in schema.SIGNAL.cols],
             'rows': [[_clean(v) for v in row] for row in rows]}
@@ -165,7 +170,11 @@ def _signals_payload(day):
 class SignalHandler(ApiHandler):
     async def get(self):
         day = self.day_arg()
-        self.send(await self.call(_cache.get_or_set, ('signals', day), 60, lambda: _signals_payload(day)))
+        strategy = self.get_argument('strategy', None)
+        if strategy and strategy not in BY_KEY:
+            raise tornado.web.HTTPError(404, f'没有策略 {strategy}')
+        self.send(await self.call(_cache.get_or_set, ('signals', day, strategy), 60,
+                                  lambda: _signals_payload(day, strategy)))
 
 
 def _round(value, digits):

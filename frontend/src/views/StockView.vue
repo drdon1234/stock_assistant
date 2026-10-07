@@ -6,6 +6,9 @@ import EChart from '../components/EChart.vue'
 import Icon from '../components/Icon.vue'
 import { calcChips } from '../components/cyq'
 import { INDICATOR_LABELS, MAIN_OVERLAYS, SUB_INDICATORS } from '../components/indicatorCatalog'
+import GuideButton from '../components/GuideButton.vue'
+import PageGuide from '../components/PageGuide.vue'
+import { patternDirection } from '../help/patterns'
 import { api } from '../api'
 import { SERIES_COLORS, colors } from '../colors'
 import { fmtMoney, fmtNum, fmtPct, fmtPercent, fmtVol, trendClass } from '../format'
@@ -126,22 +129,25 @@ const option = computed(() => {
   if (showPatterns.value && d.patterns.length) {
     const groups = new Map()
     for (const p of d.patterns) {
-      const g = groups.get(p.i) || { bull: [], bear: [] }
-      ;(p.value > 0 ? g.bull : g.bear).push(p.label)
+      const g = groups.get(p.i) || { up: [], down: [], flat: [] }
+      g[patternDirection(p.key, p.value)].push(p.label)
       groups.set(p.i, g)
     }
     const bull = []
     const bear = []
+    const neutral = []
     groups.forEach((g, i) => {
-      if (g.bull.length) bull.push({ value: [i, d.high[i]], labels: g.bull })
-      if (g.bear.length) bear.push({ value: [i, d.low[i]], labels: g.bear })
+      if (g.up.length) bull.push({ value: [i, d.high[i]], labels: g.up })
+      if (g.down.length) bear.push({ value: [i, d.low[i]], labels: g.down })
+      if (g.flat.length) neutral.push({ value: [i, d.high[i]], labels: g.flat })
     })
-    const mark = (name, points, color, symbolRotate, offset) => ({
-      name, type: 'scatter', data: points, xAxisIndex: 0, yAxisIndex: 0, symbol: 'triangle', symbolSize: 7,
+    const mark = (name, points, color, symbolRotate, offset, symbol = 'triangle') => ({
+      name, type: 'scatter', data: points, xAxisIndex: 0, yAxisIndex: 0, symbol, symbolSize: symbol === 'circle' ? 5 : 7,
       symbolRotate, symbolOffset: [0, offset], itemStyle: { color, opacity: 0.85 }, z: 5,
       tooltip: { trigger: 'item', formatter: (p) => `${d.dates[p.value[0]]}<br/>${name}：${p.data.labels.join('、')}` },
     })
-    series.push(mark('看涨形态', bull, c.up, 0, -10), mark('看跌形态', bear, c.down, 180, 10))
+    series.push(mark('看涨形态', bull, c.up, 0, -10), mark('看跌形态', bear, c.down, 180, 10),
+      mark('中性形态', neutral, c.muted, 0, bull.length ? -20 : -10, 'circle'))
   }
   const upDown = (i) => (d.close[i] >= d.open[i] ? c.up : c.down)
   series.push({
@@ -274,6 +280,7 @@ async function onAttention() {
         <span class="muted small">{{ last.date }}</span>
       </template>
       <span class="spacer" />
+      <GuideButton id="stock" />
       <NButton size="small" :type="attention ? 'warning' : 'default'" secondary @click="onAttention">
         {{ attention ? '★ 已关注' : '☆ 关注' }}
       </NButton>
@@ -286,6 +293,7 @@ async function onAttention() {
       </NButton>
     </div>
 
+    <PageGuide id="stock" />
     <NEmpty v-if="error" :description="error" class="card" style="padding: 48px 0" />
     <NSpin v-else :show="!data" class="body">
       <div class="controls toolbar">

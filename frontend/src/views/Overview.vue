@@ -3,10 +3,13 @@ import { computed, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { NEmpty, NSkeleton, NTabPane, NTabs, useMessage } from 'naive-ui'
 import EChart from '../components/EChart.vue'
+import GuideButton from '../components/GuideButton.vue'
+import PageGuide from '../components/PageGuide.vue'
 import { api } from '../api'
 import { colors } from '../colors'
 import { fmtMoney, fmtNum, fmtPct, trendClass } from '../format'
 import { state } from '../store'
+import { KIND_LABELS } from '../strategy'
 
 const message = useMessage()
 const data = ref(null)
@@ -64,15 +67,21 @@ const lists = computed(() => [
   { key: 'losers', title: '跌幅榜', rows: data.value?.losers || [] },
   { key: 'active', title: '成交额', rows: data.value?.active || [] },
 ])
-const kindLabel = { buy: '买入', sell: '风险' }
+const signalGroups = computed(() => ['buy', 'sell'].map((kind) => ({
+  kind,
+  title: KIND_LABELS[kind],
+  items: (data.value?.signals?.items || []).filter((s) => s.kind === kind),
+})).filter((g) => g.items.length))
 </script>
 
 <template>
   <div class="page">
     <div class="toolbar">
       <h1>市场概览</h1>
+      <GuideButton id="overview" />
       <span v-if="data?.date" class="muted">数据日期 {{ data.date }}</span>
     </div>
+    <PageGuide id="overview" />
 
     <NSkeleton v-if="loading" :repeat="3" height="120px" :sharp="false" style="border-radius: 10px" />
     <NEmpty v-else-if="!market" description="还没有行情数据：运行 python -m instock run 或启动调度进程后再来" class="card empty" />
@@ -114,13 +123,16 @@ const kindLabel = { buy: '买入', sell: '风险' }
           <div class="card-title">
             策略信号 <span v-if="data.signals?.date" class="muted small">{{ data.signals.date }}</span>
           </div>
-          <div class="card-body signals" v-if="data.signals?.items">
-            <RouterLink v-for="s in data.signals.items" :key="s.key" :to="{ path: '/strategy', query: { key: s.key } }"
-                        class="signal" :class="s.kind">
-              <span class="name">{{ s.name }}</span>
-              <span class="badge">{{ kindLabel[s.kind] }}</span>
-              <span class="num">{{ s.count }}</span>
-            </RouterLink>
+          <div class="card-body" v-if="signalGroups.length">
+            <div v-for="g in signalGroups" :key="g.kind" class="signal-group">
+              <RouterLink :to="`/strategies/${g.kind}`" class="group-title" :class="g.kind">{{ g.title }} →</RouterLink>
+              <div class="signals">
+                <RouterLink v-for="s in g.items" :key="s.key" :to="`/strategy/${s.key}`" class="signal" :class="s.kind">
+                  <span class="name">{{ s.name }}</span>
+                  <span class="num">{{ s.count }}</span>
+                </RouterLink>
+              </div>
+            </div>
           </div>
           <NEmpty v-else description="暂无策略结果" class="empty-inner" />
         </div>
@@ -187,9 +199,12 @@ const kindLabel = { buy: '买入', sell: '风险' }
 }
 .signal:hover { border-color: var(--primary); text-decoration: none; }
 .signal .name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.signal .badge { font-size: 11px; padding: 0 5px; border-radius: 4px; background: var(--up-soft); color: var(--up); }
-.signal.sell .badge { background: var(--down-soft); color: var(--down); }
-.signal .num { font-weight: 650; }
+.signal .num { font-weight: 650; color: var(--up); }
+.signal.sell .num { color: var(--down); }
+.signal-group + .signal-group { margin-top: 12px; }
+.group-title { display: inline-block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.group-title.buy { color: var(--up); }
+.group-title.sell { color: var(--down); }
 .tabs { padding: 4px 16px 8px; }
 .rank { width: 100%; border-collapse: collapse; font-size: 13px; }
 .rank td { padding: 7px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }

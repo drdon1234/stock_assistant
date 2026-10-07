@@ -37,3 +37,9 @@ export function formatValue(v, fmt) {
 export const trendClass = (v) => (!isNum(v) || v === 0 ? '' : v > 0 ? 'up' : 'down')
 
 export const NUMERIC_FORMATS = new Set(['price', 'pct', 'percent', 'money', 'vol', 'share', 'int', 'num', 'signal'])
+
+/** 时间戳转 YYYY-MM-DD（本地时区），用于日期选择器。 */
+export function toDateString(ts) {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}

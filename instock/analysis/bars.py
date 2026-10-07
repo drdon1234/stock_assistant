@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 from instock.analysis import indicators
 
@@ -34,6 +35,15 @@ class Bars:
 
     def vol_ma(self, n):
         return self._cached(('vol_ma', n), lambda: indicators.ma(self.volume, n))
+
+    def atr(self, n):
+        """平均真实波幅，按通达信 ATR 公式取 TR 的 N 日简单平均。"""
+        return self._cached(('atr', n), lambda: indicators.ma(
+            indicators.true_range(self.high, self.low, self.close), n))
+
+    def hhv(self, n):
+        """含当日在内的 N 日最高价。"""
+        return self._cached(('hhv', n), lambda: pd.Series(self.high).rolling(n).max().to_numpy())
 
     def rsi(self, n):
         return self._cached(('rsi', n), lambda: indicators.rsi(self.close, n))

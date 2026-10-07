@@ -2,6 +2,8 @@
 import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { NButton, NEmpty, NSpin, useMessage } from 'naive-ui'
+import GuideButton from '../components/GuideButton.vue'
+import PageGuide from '../components/PageGuide.vue'
 import { api } from '../api'
 import { fmtMoney, fmtNum, fmtPct, fmtPercent, trendClass } from '../format'
 import { toggleAttention } from '../store'
@@ -32,7 +34,8 @@ load()
 
 <template>
   <div class="page">
-    <div class="toolbar"><h1>我的关注</h1><span class="muted">{{ items.length }} 只</span></div>
+    <div class="toolbar"><h1>我的关注</h1><GuideButton id="attention" /><span class="muted">{{ items.length }} 只</span></div>
+    <PageGuide id="attention" />
     <NSpin :show="loading">
       <NEmpty v-if="!loading && !items.length" description="还没有关注的股票，在数据表或个股页点击 ☆ 添加" class="card empty" />
       <div v-else class="list">

@@ -65,3 +65,42 @@ def test_graham_screen():
         'netprofit_growthrate_3y': [5, 5, 5],
     })
     assert BY_KEY['graham'].screen(df)['code'].tolist() == ['000001']
+
+
+def test_sell_strategies_trigger_only_on_first_break():
+    close = np.concatenate([np.linspace(10, 12, 40), [10.5, 10.0]])
+    b = Bars(make_bars(close, spread=0.0))
+    exit_ = BY_KEY['turtle_exit']
+    assert exit_.check(b, len(b) - 2)  # 首次跌破 20 日最低价
+    assert not exit_.check(b, len(b) - 1)  # 次日继续下跌不再重复触发
+
+
+def test_chandelier_exit():
+    close = np.concatenate([np.linspace(10, 15, 40), [15.0, 13.0]])
+    b = Bars(make_bars(close, spread=0.01))
+    stop = b.hhv(22) - 3 * b.atr(22)
+    assert close[-2] >= stop[-2] and close[-1] < stop[-1]
+    assert BY_KEY['chandelier_exit'].check(b, len(b) - 1)
+    assert not BY_KEY['chandelier_exit'].check(b, len(b) - 2)
+
+
+def test_ma50_break_needs_volume():
+    close = np.concatenate([np.linspace(10, 12, 60), [11.0]])
+    df = make_bars(close, spread=0.01)
+    b = Bars(df)
+    assert not BY_KEY['ma50_break'].check(b, len(b) - 1)  # 量能不足
+    df.loc[len(df) - 1, 'volume'] = 2e6
+    assert BY_KEY['ma50_break'].check(Bars(df), len(df) - 1)
+
+
+def test_granville_sell():
+    up = np.linspace(10, 20, 150)  # 200 日线先上行
+    flat = np.full(230, 20.0)  # 长期横盘使 200 日线走平，收盘仍不低于均线
+    close = np.concatenate([up, flat, [19.0]])
+    b = Bars(make_bars(close, spread=0.0))
+    i = len(b) - 1
+    ma200 = b.ma(200)
+    assert ma200[i - 20] > ma200[i - 60] and ma200[i] <= ma200[i - 20]
+    assert close[i - 1] >= ma200[i - 1] and close[i] < ma200[i]
+    assert BY_KEY['granville_sell'].check(b, i)
+    assert not BY_KEY['granville_sell'].check(Bars(make_bars(up, spread=0.0)), len(up) - 1)
