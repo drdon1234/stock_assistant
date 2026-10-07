@@ -181,9 +181,10 @@ class _Fetcher:
             client.connect()
         return client
 
-    def fetch(self, code, day):
-        """返回 (收盘价, 成交量)；None 表示两台服务器都没有这天的数据；False 表示多次出错。"""
-        errors, empties, i = 0, 0, 0
+    def fetch(self, code, day, close=None):
+        """返回 (收盘价, 成交量)；None 表示两台服务器都没有这天的数据；False 表示多次出错；
+        给出 close 时还要求最后一分钟价格等于日线收盘价，两台服务器都不符时返回 MISMATCH（个别服务器某些日期的数据有误）。"""
+        errors, empties, i, mismatch = 0, 0, 0, False
         while errors < 3:
             try:
                 got = self._client(i).minutes(code, day)
@@ -196,11 +197,12 @@ class _Fetcher:
                 self.clients[i] = None
                 errors += 1
                 continue
-            if got is not None:
+            if got is not None and (close is None or abs(got[0][-1] - close) <= 0.006):
                 return got
+            mismatch = mismatch or got is not None
             empties += 1
             if empties >= 2:
-                return None
+                return MISMATCH if mismatch else None
             i = 1 - i
         return False
 
@@ -210,6 +212,7 @@ class _Fetcher:
                 client.close()
 
 
+MISMATCH = 'mismatch'
 _UNAVAILABLE_DAYS = 90  # 抽查都没有数据的股票，多少天内不再尝试
 
 
@@ -260,20 +263,18 @@ def sync(scope='index', start=None, connections=8, end=None):
                 existing = load(code, year)
                 dates, prices, volumes = [], [], []
                 for day in days:
-                    got = fetcher.fetch(code, day)
+                    got = fetcher.fetch(code, day, closes[day])
                     with lock:
                         totals['calls'] += 1
                         if got is False:
                             totals['failed'] += 1
                         elif got is None:
                             totals['empty'] += 1
-                    if not got:
+                        elif got is MISMATCH:
+                            totals['mismatch'] += 1
+                    if not got or got is MISMATCH:
                         continue
                     price, volume = got
-                    if abs(price[-1] - closes[day]) > 0.006:
-                        with lock:
-                            totals['mismatch'] += 1
-                        continue
                     dates.append(day.year * 10000 + day.month * 100 + day.day)
                     prices.append(price)
                     volumes.append(volume)

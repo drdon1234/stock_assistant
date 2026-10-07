@@ -163,14 +163,17 @@ def test_minute_sync_resumes_and_validates(quant_data, monkeypatch):  # noqa: F8
         def minutes(self, code, day):
             calls.append(day)
             row = raw[raw['date'].dt.date == day].iloc[0]
-            close = row.close + (0.5 if day == DAYS[7] else 0)  # 这天与日线收盘价不符，应丢弃
+            bad = day == DAYS[7] or (day == DAYS[8] and calls.count(day) == 1)
+            close = row.close + (0.5 if bad else 0)  # DAYS[7] 各服务器都不符应丢弃；DAYS[8] 首次不符，换服务器取到
             return _path(row.open, close), np.full(240, 10)
 
     monkeypatch.setattr(tdxhq, 'Client', FakeClient)
     totals = minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=2, end=DAYS[9])
-    assert totals['days'] == 9 and totals['mismatch'] == 1 and len(calls) == 1 + 10  # 先抽查（第一天有数据即停止）
+    assert totals['days'] == 9 and totals['mismatch'] == 1
     saved = minute.load('300001.XSHE', 2022)
     assert len(saved['dates']) == 9 and saved['price'].shape == (9, 240)
+    assert 20220113 in saved['dates'] and 20220112 not in saved['dates']  # DAYS[8] 保留、DAYS[7] 丢弃
+    assert calls.count(DAYS[8]) == 2 and calls.count(DAYS[7]) == 2  # 不符时都问过另一台服务器
     calls.clear()
     totals = minute.sync(['300001.XSHE'], DAYS[0].isoformat(), connections=2, end=DAYS[11])
     assert sorted(set(calls)) == [DAYS[7], DAYS[10], DAYS[11]]  # 只补缺失的日期
