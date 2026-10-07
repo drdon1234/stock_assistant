@@ -42,11 +42,11 @@ def test_replace_is_idempotent():
 def test_init_adds_missing_columns():
     eng = db.engine()
     with eng.begin() as conn:
-        conn.execute(sa.text('DROP TABLE IF EXISTS cn_stock_attention'))
-        conn.execute(sa.text('CREATE TABLE cn_stock_attention (code VARCHAR(6) PRIMARY KEY)'))
+        conn.execute(sa.text('DROP TABLE IF EXISTS cn_market_return'))
+        conn.execute(sa.text('CREATE TABLE cn_market_return (date DATE PRIMARY KEY)'))
     db.init()
-    columns = {c['name'] for c in sa.inspect(eng).get_columns('cn_stock_attention')}
-    assert 'created_at' in columns
+    columns = {c['name'] for c in sa.inspect(eng).get_columns('cn_market_return')}
+    assert {'stocks', 'ret_60'} <= columns
 
 
 def test_forward_returns_enter_next_open():

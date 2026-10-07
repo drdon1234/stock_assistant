@@ -12,6 +12,7 @@ export const router = createRouter({
     { path: '/strategy', redirect: (to) => ({ path: to.query.key ? `/strategy/${to.query.key}` : '/strategies/buy', query: {} }) },
     { path: '/stock/:code', name: 'stock', component: () => import('./views/StockView.vue') },
     { path: '/attention', name: 'attention', component: () => import('./views/Attention.vue'), meta: { title: '我的关注' } },
+    { path: '/account', name: 'account', component: () => import('./views/Account.vue'), meta: { title: '账号设置' } },
     { path: '/learn', name: 'learn', component: () => import('./views/Learn.vue'), meta: { title: '学习中心' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

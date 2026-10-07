@@ -1,4 +1,7 @@
-"""Web 服务：JSON API + 前端单页应用。数据库查询和计算都放到线程池，事件循环不被阻塞。"""
+"""Web 服务：JSON API + 前端单页应用。数据库查询和计算都放到线程池，事件循环不被阻塞。
+
+除登录相关接口外，所有 /api 接口都要求有效的登录凭证；前端页面与静态资源不含数据，无需登录。
+"""
 import datetime
 import json
 import logging
@@ -14,7 +17,7 @@ import sqlalchemy as sa
 import tornado.ioloop
 import tornado.web
 
-from instock import __version__, config, db, history, net, schema
+from instock import __version__, auth, config, db, history, net, schema
 from instock.analysis import indicators, patterns
 from instock.analysis.strategies import BY_KEY, STRATEGIES
 
@@ -72,15 +75,68 @@ class _TTLCache:
 
 
 _cache = _TTLCache()
+_throttle = auth.Throttle()
+_SAFE_METHODS = ('GET', 'HEAD', 'OPTIONS')
+
+
+def _security_headers(handler):
+    handler.set_header('X-Content-Type-Options', 'nosniff')
+    handler.set_header('X-Frame-Options', 'DENY')
+    handler.set_header('Referrer-Policy', 'same-origin')
 
 
 class ApiHandler(tornado.web.RequestHandler):
+    public = False  # True 表示无需登录即可访问
+
     def set_default_headers(self):
         self.set_header('Content-Type', 'application/json; charset=utf-8')
-        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('Cache-Control', 'no-store')
+        _security_headers(self)
+
+    async def prepare(self):
+        # 跨站页面无法给请求加自定义头（会触发 CORS 预检而被拒），以此防御 CSRF；Cookie 的 SameSite=Lax 再加一层
+        if self.request.method not in _SAFE_METHODS and self.request.headers.get('X-Requested-With') != 'instock':
+            raise tornado.web.HTTPError(403, '请求来源无效')
+        token = self.get_cookie(auth.COOKIE)
+        user, renewed = await self.call(auth.resolve, token) if token else (None, False)
+        self.current_user = user
+        if renewed:
+            self.set_token(token)
+        elif token and user is None:
+            self.clear_cookie(auth.COOKIE)
+        if user is None and not self.public:
+            raise tornado.web.HTTPError(401, '请先登录')
+
+    @property
+    def username(self):
+        return self.current_user['username']
+
+    def require_admin(self):
+        if not self.current_user['admin']:
+            raise tornado.web.HTTPError(403, '需要管理员权限')
+
+    def set_token(self, token):
+        self.set_cookie(auth.COOKIE, token, expires_days=config.SESSION_DAYS, httponly=True, samesite='Lax',
+                        secure=self.request.protocol == 'https')
+
+    def json_body(self):
+        try:
+            data = json.loads(self.request.body or b'{}')
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            raise tornado.web.HTTPError(400, '请求格式错误')
+        return data
 
     async def call(self, fn, *args):
         return await tornado.ioloop.IOLoop.current().run_in_executor(_pool, fn, *args)
+
+    async def call_auth(self, fn, *args):
+        """执行账号操作，把 AuthError 转为 400 响应。"""
+        try:
+            return await self.call(fn, *args)
+        except auth.AuthError as e:
+            raise tornado.web.HTTPError(400, str(e)) from None
 
     def send(self, payload):
         self.finish(json.dumps(payload, ensure_ascii=False, separators=(',', ':'), default=_clean))
@@ -112,9 +168,10 @@ def _dates(table, limit=250):
     return [d for (d,) in db.query(sa.select(table.c.date).distinct().order_by(table.c.date.desc()).limit(limit))[1]]
 
 
-def _attention_codes():
+def _attention_codes(username):
     table = schema.SA_TABLES[schema.ATTENTION.name]
-    return [code for (code,) in db.query(sa.select(table.c.code).order_by(table.c.created_at.desc()))[1]]
+    return [code for (code,) in db.query(sa.select(table.c.code).where(table.c.username == username)
+                                         .order_by(table.c.created_at.desc(), table.c.code))[1]]
 
 
 def _table_payload(name, day):
@@ -229,7 +286,7 @@ def _limit_pct(code, name):
 def _overview_payload():
     day, spot = _latest_spot()
     payload = {'date': day, 'market': None, 'gainers': [], 'losers': [], 'active': [], 'industry': [],
-               'signals': [], 'attention': []}
+               'signals': []}
     if day is not None and not spot.empty:
         chg = pd.to_numeric(spot['change_rate'], errors='coerce')
         limit = np.array([_limit_pct(c, n) for c, n in zip(spot['code'], spot['name'])])
@@ -250,9 +307,6 @@ def _overview_payload():
         payload['gainers'] = _records(brief.nlargest(10, 'change_rate'))
         payload['losers'] = _records(brief.nsmallest(10, 'change_rate'))
         payload['active'] = _records(brief.nlargest(10, 'deal_amount'))
-        codes = _attention_codes()
-        if codes:
-            payload['attention'] = _records(brief[brief['code'].isin(codes)])
     industry = schema.SA_TABLES[schema.FUND_FLOW_INDUSTRY.name]
     flow_day = db.scalar(sa.select(sa.func.max(industry.c.date)))
     if flow_day:
@@ -273,7 +327,10 @@ def _overview_payload():
 
 class OverviewHandler(ApiHandler):
     async def get(self):
-        self.send(await self.call(_cache.get_or_set, ('overview',), 60, _overview_payload))
+        payload = await self.call(_cache.get_or_set, ('overview',), 60, _overview_payload)
+        attention = await self.call(_attention_payload, self.username)
+        # 缓存的部分各账号共用，关注列表按账号单独查询
+        self.send({**payload, 'attention': [i for i in attention['items'] if 'new_price' in i]})
 
 
 def _lookup_name(code):
@@ -308,7 +365,6 @@ def _kline_payload(code):
         'vol_ma': {f'ma{n}': _round_list(indicators.ma(v / 100, n)[start:], 0) for n in (5, 10)},
         'indicators': {k: _round_list(arr[start:], 4) for k, arr in ind.items()},
         'patterns': marks,
-        'attention': code in _attention_codes(),
     }
 
 
@@ -321,8 +377,8 @@ class KlineHandler(ApiHandler):
         self.send(payload)
 
 
-def _attention_payload():
-    codes = _attention_codes()
+def _attention_payload(username):
+    codes = _attention_codes(username)
     quotes = {}
     for spec in (schema.ETF_SPOT, schema.STOCK_SPOT):
         table = schema.SA_TABLES[spec.name]
@@ -340,22 +396,22 @@ def _attention_payload():
 
 class AttentionHandler(ApiHandler):
     async def get(self):
-        self.send(await self.call(_attention_payload))
+        self.send(await self.call(_attention_payload, self.username))
 
     async def put(self, code):
         table = schema.SA_TABLES[schema.ATTENTION.name]
+        username = self.username
 
         def add():
-            db.execute(table.delete().where(table.c.code == code))
-            db.execute(table.insert().values(code=code, created_at=datetime.date.today()))
+            with db.engine().begin() as conn:
+                conn.execute(table.delete().where(table.c.username == username, table.c.code == code))
+                conn.execute(table.insert().values(username=username, code=code, created_at=datetime.date.today()))
         await self.call(add)
-        _cache.clear()
         self.send({'ok': True})
 
     async def delete(self, code):
         table = schema.SA_TABLES[schema.ATTENTION.name]
-        await self.call(lambda: db.execute(table.delete().where(table.c.code == code)))
-        _cache.clear()
+        await self.call(db.execute, table.delete().where(table.c.username == self.username, table.c.code == code))
         self.send({'ok': True})
 
 
@@ -381,8 +437,103 @@ class SearchHandler(ApiHandler):
         self.send({'items': await self.call(_search, self.get_argument('q', ''))})
 
 
+def _client(handler):
+    return handler.request.headers.get('User-Agent', ''), handler.request.remote_ip
+
+
+class SessionHandler(ApiHandler):
+    """GET 当前登录状态；POST 登录并颁发长效凭证；DELETE 退出登录（吊销当前凭证）。"""
+    public = True
+
+    async def get(self):
+        has_users = await self.call(auth.has_users)
+        self.send({'user': self.current_user, 'setup': not has_users, 'days': config.SESSION_DAYS})
+
+    async def post(self):
+        data = self.json_body()
+        username, password = str(data.get('username') or ''), str(data.get('password') or '')
+        ip = self.request.remote_ip
+        wait = _throttle.wait(ip, username)
+        if wait:
+            raise tornado.web.HTTPError(429, f'登录失败次数过多，请 {math.ceil(wait / 60)} 分钟后再试')
+        user = await self.call(auth.authenticate, username, password)
+        if user is None:
+            _throttle.fail(ip, username)
+            log.warning('登录失败：账号 %r，IP %s', username[:32], ip)
+            raise tornado.web.HTTPError(400, '账号或密码错误')
+        _throttle.reset(username)
+        await self.call(auth.revoke, self.get_cookie(auth.COOKIE))  # 本设备上的旧凭证作废
+        self.set_token(await self.call(auth.issue, user['username'], *_client(self)))
+        log.info('登录成功：账号 %s，IP %s', user['username'], ip)
+        self.send({'user': user})
+
+    async def delete(self):
+        await self.call(auth.revoke, self.get_cookie(auth.COOKIE))
+        self.clear_cookie(auth.COOKIE)
+        self.send({'ok': True})
+
+
+class PasswordHandler(ApiHandler):
+    """修改自己的密码：其他设备上的登录全部失效，当前设备换发新凭证。"""
+
+    async def post(self):
+        data = self.json_body()
+        old, new = str(data.get('old') or ''), str(data.get('new') or '')
+        if await self.call(auth.authenticate, self.username, old) is None:
+            raise tornado.web.HTTPError(400, '原密码错误')
+        await self.call_auth(auth.set_password, self.username, new)
+        self.set_token(await self.call(auth.issue, self.username, *_client(self)))
+        self.send({'ok': True})
+
+
+class UsersHandler(ApiHandler):
+    """账号管理（仅管理员）：列出、新建、重置密码、设置管理员、强制下线、删除。"""
+
+    async def prepare(self):
+        await super().prepare()
+        self.require_admin()
+
+    async def get(self):
+        self.send({'items': await self.call(auth.list_users)})
+
+    async def post(self):
+        data = self.json_body()
+        user = await self.call_auth(auth.create_user, str(data.get('username') or ''),
+                                    str(data.get('password') or ''), bool(data.get('admin')))
+        log.info('管理员 %s 创建账号 %s', self.username, user['username'])
+        self.send({'user': user})
+
+    async def put(self, name):
+        data = self.json_body()
+        if 'admin' in data:
+            if name == self.username and not data['admin']:
+                raise tornado.web.HTTPError(400, '不能取消自己的管理员权限')
+            await self.call_auth(auth.set_admin, name, bool(data['admin']))
+        if data.get('password'):
+            await self.call_auth(auth.set_password, name, str(data['password']))
+            log.info('管理员 %s 重置了账号 %s 的密码', self.username, name)
+        if data.get('logout'):
+            await self.call(auth.revoke_user, name)
+        self.send({'user': await self.call(auth.get_user, name)})
+
+    async def delete(self, name):
+        if name == self.username:
+            raise tornado.web.HTTPError(400, '不能删除当前登录的账号')
+        await self.call_auth(auth.delete_user, name)
+        log.info('管理员 %s 删除账号 %s', self.username, name)
+        self.send({'ok': True})
+
+
+class NotFoundHandler(ApiHandler):
+    def prepare(self):
+        raise tornado.web.HTTPError(404, '接口不存在')
+
+
 class SpaHandler(tornado.web.RequestHandler):
     """前端路由由浏览器端处理，未匹配的路径都返回 index.html。"""
+
+    def set_default_headers(self):
+        _security_headers(self)
 
     def get(self, *_):
         index = DIST_DIR / 'index.html'
@@ -407,6 +558,11 @@ def make_app():
         (r'/api/attention', AttentionHandler),
         (r'/api/attention/(\d{6})', AttentionHandler),
         (r'/api/search', SearchHandler),
+        (r'/api/auth/session', SessionHandler),
+        (r'/api/auth/password', PasswordHandler),
+        (r'/api/users', UsersHandler),
+        (r'/api/users/([a-z0-9_.-]{1,32})', UsersHandler),
+        (r'/api/.*', NotFoundHandler),
         (r'/assets/(.*)', tornado.web.StaticFileHandler, {'path': DIST_DIR / 'assets'}),
         (r'/(favicon\.svg)', tornado.web.StaticFileHandler, {'path': DIST_DIR}),
         (r'/.*', SpaHandler),
@@ -415,6 +571,7 @@ def make_app():
 
 def main():
     db.init()
-    make_app().listen(config.WEB_PORT, config.WEB_HOST)
+    auth.bootstrap()
+    make_app().listen(config.WEB_PORT, config.WEB_HOST, xheaders=config.TRUST_PROXY)
     log.info('Web 服务已启动：http://localhost:%d/', config.WEB_PORT)
     tornado.ioloop.IOLoop.current().start()

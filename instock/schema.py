@@ -35,11 +35,11 @@ class TableSpec:
 
 
 _KINDS = {'F': (sa.Float, 'num'), 'B': (sa.BigInteger, 'num'), 'I': (sa.SmallInteger, 'int'),
-          'Y': (sa.Boolean, 'bool'), 'D': (sa.Date, 'date')}
+          'Y': (sa.Boolean, 'bool'), 'D': (sa.Date, 'date'), 'T': (sa.DateTime, 'datetime')}
 
 
 def c(name, kind, label, fmt=None, src=None):
-    """kind：F 浮点，B 长整数，I 小整数，Y 布尔，D 日期，Sn 长度为 n 的字符串。"""
+    """kind：F 浮点，B 长整数，I 小整数，Y 布尔，D 日期，T 日期时间，Sn 长度为 n 的字符串。"""
     if kind[0] == 'S':
         return Col(name, sa.String(int(kind[1:])), label, fmt or 'text', src)
     sa_type, default_fmt = _KINDS[kind]
@@ -69,8 +69,22 @@ def _money(name, label):
     return c(name, 'B', label, 'money')
 
 
-ATTENTION = TableSpec('cn_stock_attention', '我的关注', (
-    CODE, c('created_at', 'D', '关注日期')), key=('code',))
+USERNAME = c('username', 'S32', '账号')
+
+USER = TableSpec('instock_user', '账号', (
+    USERNAME, c('password', 'S200', '密码哈希'), c('is_admin', 'Y', '管理员'), c('created_at', 'T', '创建时间')),
+    key=('username',))
+
+# 登录凭证：token 为凭证的 SHA-256，库中不保存凭证原文
+SESSION = TableSpec('instock_session', '登录凭证', (
+    c('token', 'S64', '凭证哈希'), USERNAME, c('created_at', 'T', '登录时间'), c('last_used', 'T', '最近使用'),
+    c('expires_at', 'T', '过期时间'), c('user_agent', 'S200', '浏览器'), c('ip', 'S64', 'IP')),
+    key=('token',))
+
+# 每个账号各自的关注列表。旧版不分账号的 cn_stock_attention 在创建第一个账号时迁移给该账号
+ATTENTION = TableSpec('cn_stock_user_attention', '我的关注', (
+    USERNAME, CODE, c('created_at', 'D', '关注日期')), key=('username', 'code'))
+LEGACY_ATTENTION = 'cn_stock_attention'
 
 STOCK_SPOT = TableSpec('cn_stock_spot', '每日股票数据', (
     DATE, CODE, NAME, PRICE, CHANGE, _price('ups_downs', '涨跌额'), c('volume', 'B', '成交量', 'vol'),
@@ -427,7 +441,7 @@ BENCHMARK = TableSpec('cn_market_return', '全市场基准收益', (
 
 TABLES = {spec.name: spec for spec in (
     STOCK_SPOT, ETF_SPOT, SELECTION, FUND_FLOW, FUND_FLOW_INDUSTRY, FUND_FLOW_CONCEPT, LHB, BLOCKTRADE, BONUS,
-    CHIP_RACE_OPEN, CHIP_RACE_END, LIMITUP_REASON, INDICATOR, PATTERN, SIGNAL, BENCHMARK, ATTENTION)}
+    CHIP_RACE_OPEN, CHIP_RACE_END, LIMITUP_REASON, INDICATOR, PATTERN, SIGNAL, BENCHMARK, USER, SESSION, ATTENTION)}
 
 metadata = sa.MetaData()
 
@@ -439,3 +453,4 @@ def _build(spec):
 
 SA_TABLES = {name: _build(spec) for name, spec in TABLES.items()}
 sa.Index('ix_signal_strategy_date', SA_TABLES[SIGNAL.name].c.strategy, SA_TABLES[SIGNAL.name].c.date)
+sa.Index('ix_session_username', SA_TABLES[SESSION.name].c.username)

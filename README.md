@@ -17,6 +17,7 @@
 <a href="#-买卖策略">买卖策略</a> ｜
 <a href="#-数据源">数据源</a> ｜
 <a href="#%EF%B8%8F-配置">配置</a> ｜
+<a href="#-账号与安全">账号与安全</a> ｜
 <a href="https://github.com/drdon1234/stock_assistant/issues">问题反馈</a>
 
 </div>
@@ -39,11 +40,12 @@ InStock 是一款自托管的 A 股数据分析与选股系统，可部署在 Li
 4. 🧪 **策略回测**：信号次日开盘买入，统计持有 1~60 个交易日的收益、胜率，以及相对全市场等权基准的超额收益。
 5. 🕯️ **个股 K 线**：均线、主图叠加、25 种副图指标、形态标记；筹码分布随光标联动，显示获利比例、平均成本与集中度。
 6. 🗃️ **数据表**：虚拟滚动，数千行数据流畅浏览；宽表按主题分组显示表头，可按组选择显示的列；支持按列筛选、排序、按日期查看历史与导出 CSV。K 线形态按“每只股票列出当天出现的形态”展示，可按形态与方向筛选。
-7. ⭐ **我的关注**：关注的股票在各数据表中高亮，可只看关注。
+7. ⭐ **我的关注**：关注列表按账号保存，各账号互不影响；关注的股票在各数据表中高亮，可只看关注。
 8. ⏱️ **自动调度**：交易时段每 30 分钟刷新行情，交易日收盘后运行完整作业；也可按单日、多日或区间回补历史。
 9. 🛡️ **稳定抓取**：优先使用限流宽松的数据源；每个数据源独立限速、重试并在连续失败时熔断，支持代理与 Cookie。
 10. 📚 **学习中心**：术语表、技术指标、61 种 K 线形态、策略原理与回测解读；每个页面带可收起的页面说明，列头悬停显示该列的含义。
 11. 📱 **响应式界面**：适配桌面与移动端，支持浅色与深色主题。
+12. 🔐 **账号与登录**：多账号、管理员账号管理；登录后颁发长效凭证，常用设备无需反复登录，可安全部署到公网。
 
 ## 🚀 快速开始
 
@@ -62,6 +64,7 @@ curl -fsSLO https://raw.githubusercontent.com/drdon1234/stock_assistant/main/doc
 curl -fsSL https://raw.githubusercontent.com/drdon1234/stock_assistant/main/.env.example -o .env
 sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$(openssl rand -hex 16)/" .env
 docker compose up -d
+docker exec -it instock-web python -m instock user add admin    # 创建登录账号，按提示输入密码
 ```
 
 `.env` 中可修改数据目录（`INSTOCK_HOME`，默认 `./data`）、网页端口（`INSTOCK_PORT`，默认 `9988`）与镜像版本（`INSTOCK_IMAGE`，默认 `latest`）。启动后访问 `http://<主机 IP>:9988`。
@@ -90,6 +93,7 @@ cd instock
 python -m pip install -r requirements.txt
 npm --prefix frontend ci
 npm --prefix frontend run build
+python -m instock user add admin    # 创建登录账号，按提示输入密码
 python -m instock worker    # 调度进程，保持运行
 python -m instock web       # 另开终端启动网页，访问 http://localhost:9988
 ```
@@ -106,9 +110,10 @@ docker compose pull && docker compose up -d    # 方式一（从源码构建则 
 
 ## 🧭 首次运行
 
-1. 调度进程启动后会对最近一个交易日补跑完整作业。首次需要抓取全部股票约 3 年的日 K 线，约 15 分钟；之后每个交易日只追加当日数据，完整作业通常 2~3 分钟。
-2. 运行进度见日志：Docker 为 `docker logs -f instock-worker`，本地为 `data/log/worker.log`。
-3. 需要历史区间的策略信号与回测统计时，可手动回补（实时类数据只能获取当前，回补时自动跳过）：
+1. 网页需要登录。第一个账号自动成为管理员，可在网页右上角“账号设置与管理”中新建其他账号（见[账号与安全](#-账号与安全)）。
+2. 调度进程启动后会对最近一个交易日补跑完整作业。首次需要抓取全部股票约 3 年的日 K 线，约 15 分钟；之后每个交易日只追加当日数据，完整作业通常 2~3 分钟。
+3. 运行进度见日志：Docker 为 `docker logs -f instock-worker`，本地为 `data/log/worker.log`。
+4. 需要历史区间的策略信号与回测统计时，可手动回补（实时类数据只能获取当前，回补时自动跳过）：
 
 ```bash
 python -m instock run 2026-06-01 2026-09-30 --only analysis,backtest
@@ -178,8 +183,27 @@ python -m instock run --only spot,etf               # 只运行部分任务
 | `INSTOCK_HIST_YEARS` | 首次抓取 K 线的年数 | 3 |
 | `INSTOCK_RATE_<数据源>` | 覆盖数据源每秒请求数，如 `INSTOCK_RATE_TENCENT=3` | 见 [`instock/net.py`](instock/net.py) |
 | `EAST_MONEY_COOKIE` | 东方财富 Cookie，也可写入数据目录下的 `eastmoney_cookie.txt` | — |
+| `INSTOCK_ADMIN_USER` / `INSTOCK_ADMIN_PASSWORD` | 网页启动时若该账号不存在则创建为管理员（已存在时不修改密码） | — |
+| `INSTOCK_SESSION_DAYS` | 登录凭证有效天数，每天首次访问自动续期 | 90 |
+| `INSTOCK_TRUST_PROXY` | 部署在反向代理之后时设为 `1`，按 `X-Forwarded-For/-Proto` 识别客户端 IP 与 HTTPS | — |
 
 代理：在数据目录下创建 `proxy.txt`，每行一个 `ip:port` 或 `user:pass@ip:port`；失效的代理会被暂时剔除。
+
+## 🔐 账号与安全
+
+除登录接口外，所有数据接口都需要登录。登录成功后服务器颁发随机的长效凭证，保存在浏览器的 HttpOnly Cookie 中（网页脚本无法读取），有效期内每天首次访问自动续期，常用设备无需反复登录；数据库中只保存凭证的哈希。修改密码、重置密码或删除账号时，该账号在所有设备上的登录立即失效。
+
+- **多账号**：每个账号有各自的关注列表。第一个账号自动成为管理员；管理员可在网页“账号设置与管理”中新建账号、重置密码、强制下线或删除账号。升级前不分账号的关注列表会归入第一个创建的账号。
+- **防护**：密码使用 scrypt 加盐哈希；同一账号 15 分钟内连续 5 次、同一 IP 20 次登录失败后暂停登录；写操作校验自定义请求头并配合 SameSite Cookie 防御 CSRF。
+- **公网部署**：请在前面加一层 HTTPS 反向代理（Nginx、Caddy 等），并设置 `INSTOCK_TRUST_PROXY=1`；通过 HTTPS 访问时 Cookie 自动带 `Secure` 标记。不要以纯 HTTP 暴露到公网。
+
+```bash
+python -m instock user add alice [--admin]    # 新建账号（Docker 前面加 docker exec -it instock-web）
+python -m instock user passwd alice           # 重置密码，忘记管理员密码时使用
+python -m instock user list                   # 列出账号、已登录设备数与最近使用时间
+python -m instock user logout alice           # 让该账号在所有设备上退出登录
+python -m instock user del alice              # 删除账号及其关注列表
+```
 
 ## 📸 界面
 
@@ -205,6 +229,7 @@ instock/
 ├── history.py    日 K 线本地缓存与增量更新
 ├── analysis/     指标、形态、策略、多进程分析引擎、回测
 ├── schema.py     数据字典（建表、入库与前端列格式）
+├── auth.py       账号、密码哈希、登录凭证与登录限流
 ├── jobs.py       作业编排 · worker.py 调度 · web/app.py 接口
 frontend/         Vue 3 + Vite + Naive UI + AG Grid + ECharts
 ```
@@ -216,7 +241,7 @@ npm --prefix frontend run dev                               # 前端开发服务
 
 ## 🔒 数据与隐私
 
-行情、分析结果、关注列表与日志均保存在本地数据目录与数据库中。程序只访问上述数据源，不向其他服务发送任何数据。网页服务没有登录功能，请勿直接暴露到公网。
+行情、分析结果、账号、关注列表与日志均保存在本地数据目录与数据库中。程序只访问上述数据源，不向其他服务发送任何数据。网页需要登录才能访问数据，部署到公网时请务必使用 HTTPS（见[账号与安全](#-账号与安全)）。
 
 ## ⚖️ 免责声明
 

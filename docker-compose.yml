@@ -9,6 +9,9 @@ x-app: &app
     MYSQL_HOST: instock-db
     MYSQL_USER: root
     MYSQL_PASSWORD: ${DB_PASSWORD:?请在 .env 中设置 DB_PASSWORD}
+    INSTOCK_ADMIN_USER: ${INSTOCK_ADMIN_USER:-}
+    INSTOCK_ADMIN_PASSWORD: ${INSTOCK_ADMIN_PASSWORD:-}
+    INSTOCK_TRUST_PROXY: ${INSTOCK_TRUST_PROXY:-}
     TZ: Asia/Shanghai
   volumes:
     - ${INSTOCK_HOME:-./data}/app:/data

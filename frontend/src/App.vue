@@ -2,12 +2,13 @@
 import { computed, h, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
-  NAutoComplete, NButton, NConfigProvider, NDialogProvider, NDrawer, NDrawerContent, NLayout, NLayoutSider, NMenu,
-  NMessageProvider, NTooltip, darkTheme, dateZhCN, zhCN,
+  NAutoComplete, NButton, NConfigProvider, NDialogProvider, NDrawer, NDrawerContent, NDropdown, NLayout, NLayoutSider,
+  NMenu, NMessageProvider, NTooltip, darkTheme, dateZhCN, zhCN,
 } from 'naive-ui'
 import Icon from './components/Icon.vue'
+import Login from './views/Login.vue'
 import { api } from './api'
-import { cycleTheme, isDark, isMobile, loadAttention, loadMeta, state } from './store'
+import { cycleTheme, isDark, isMobile, loadAttention, loadMeta, loadSession, logout, state } from './store'
 import { KIND_LABELS } from './strategy'
 
 const route = useRoute()
@@ -92,9 +93,29 @@ const themeOverrides = computed(() => ({
   },
 }))
 
-onMounted(() => {
+const userOptions = computed(() => [
+  { key: 'who', type: 'render', render: () => h('div', { class: 'user-who' }, [
+    h('b', state.user?.username), h('span', { class: 'muted' }, state.user?.admin ? '管理员' : '普通账号'),
+  ]) },
+  { type: 'divider', key: 'd1' },
+  { label: state.user?.admin ? '账号设置与管理' : '账号设置', key: 'account', icon: icon('user') },
+  { label: '退出登录', key: 'logout', icon: icon('logout') },
+])
+
+async function onUserMenu(key) {
+  if (key === 'account') go('/account')
+  else if (key === 'logout') await logout()
+}
+
+// 登录后（含页面刷新时凭证仍有效）加载菜单与关注列表
+watch(() => state.user?.username, (name) => {
+  if (!name) return
   loadMeta()
   loadAttention().catch(() => {})
+})
+
+onMounted(() => {
+  loadSession().catch(() => {})
 })
 </script>
 
@@ -102,7 +123,9 @@ onMounted(() => {
   <NConfigProvider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides" :locale="zhCN" :date-locale="dateZhCN">
     <NMessageProvider>
       <NDialogProvider>
-        <NLayout class="shell" :has-sider="!isMobile">
+        <div v-if="!state.authChecked" class="shell" />
+        <Login v-else-if="!state.user" />
+        <NLayout v-else class="shell" :has-sider="!isMobile">
           <NLayoutSider v-if="!isMobile" bordered collapse-mode="width" :collapsed-width="64" :width="220"
                         :collapsed="collapsed" show-trigger="bar" class="sider"
                         @collapse="collapsed = true" @expand="collapsed = false">
@@ -139,13 +162,18 @@ onMounted(() => {
                 </template>
                 主题：{{ themeLabel }}
               </NTooltip>
+              <NDropdown trigger="click" :options="userOptions" placement="bottom-end" @select="onUserMenu">
+                <NButton quaternary circle :aria-label="`账号：${state.user.username}`">
+                  <Icon name="user" />
+                </NButton>
+              </NDropdown>
             </header>
             <main class="content">
               <RouterView :key="route.path" />
             </main>
           </div>
         </NLayout>
-        <NDrawer v-model:show="drawer" placement="left" :width="260">
+        <NDrawer v-if="state.user" v-model:show="drawer" placement="left" :width="260">
           <NDrawerContent body-content-style="padding: 8px 0">
             <template #header>
               <div class="brand drawer-brand"><img src="/favicon.svg" alt="" width="26" height="26" /> InStock</div>
@@ -188,6 +216,8 @@ onMounted(() => {
 }
 .search { max-width: 360px; margin-left: auto; }
 .content { flex: 1; min-height: 0; overflow: auto; }
+:global(.user-who) { display: flex; flex-direction: column; gap: 2px; padding: 6px 14px 8px; min-width: 160px; }
+:global(.user-who span) { font-size: 12px; }
 @media (max-width: 767px) {
   .header { padding: 0 8px; gap: 4px; }
   .search { max-width: none; flex: 1; }

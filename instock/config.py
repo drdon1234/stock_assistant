@@ -38,6 +38,13 @@ DB_URL = _db_url()
 
 WEB_HOST = os.environ.get('INSTOCK_WEB_HOST', '0.0.0.0')
 WEB_PORT = _env_int('INSTOCK_WEB_PORT', 9988)
+# 部署在反向代理（Nginx 等）之后时设为 1：按 X-Forwarded-For/-Proto 识别客户端 IP 与 HTTPS
+TRUST_PROXY = os.environ.get('INSTOCK_TRUST_PROXY', '').lower() in ('1', 'true', 'yes')
+# 登录凭证有效天数；每天首次使用时自动续期，期间内访问过就不必重新登录
+SESSION_DAYS = _env_int('INSTOCK_SESSION_DAYS', 90)
+# 启动时若该账号不存在则创建为管理员（可选，也可用 python -m instock user add 创建）
+ADMIN_USER = os.environ.get('INSTOCK_ADMIN_USER', '').strip()
+ADMIN_PASSWORD = os.environ.get('INSTOCK_ADMIN_PASSWORD', '')
 
 # 分析计算的进程数，CPU 核数少的机器可调小
 ANALYSIS_WORKERS = _env_int('INSTOCK_WORKERS', max(1, (os.cpu_count() or 2) - 1))
