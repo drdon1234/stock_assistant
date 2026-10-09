@@ -102,4 +102,7 @@ a:hover { text-decoration: underline; }
 @media (max-width: 767px) {
   .page { padding: 12px 12px 20px; gap: 12px; }
   .toolbar h1 { font-size: 16px; }
+  /* 页面说明展开时不挤压表格：表格保持接近一屏高，页面整体滚动，说明随之滚出屏幕 */
+  .page-fill:has(.guide) { height: auto; }
+  .page-fill:has(.guide) .grid-wrap { flex: none; height: calc(100dvh - 80px); }
 }

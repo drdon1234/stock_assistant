@@ -37,21 +37,100 @@ const codeIdx = computed(() => index.value.code)
 
 const LONG_TEXT = new Set(['reason', 'concept', 'style', 'interpret', 'title', 'plan_profile'])
 
-// 表头单行显示：按文字宽度估算列宽（中文约 13px，英文数字约 7.5px），另留出排序图标的位置
-const textWidth = (text) => [...text].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 13 : 7.5), 0)
-// 触屏设备的筛选图标始终显示，表头需要多留出图标宽度
-const touch = window.matchMedia?.('(hover: none)').matches
+// 列宽不提供手动调整，按表头与单元格文字的实际宽度计算，超过上限的表头换行。
+// 手机上的上限更小，以便一屏多放几列
+const CELL_PAD = { mobile: 6, desktop: 10 } // 单元格左右内边距，与主题参数一致
+// 表头除文字外还要容纳排序图标（21px）与筛选按钮（16px）；两者都始终预留位置，排序或悬停时列名不会重新换行
+const HEAD_ICONS = 37
+const HEAD_LINE = 12 * 1.3 // 表头字号 × 行高
+let ctx = null
+let fontFamily = ''
+
+function measure(text, size, weight = 400) {
+  if (!ctx) {
+    ctx = document.createElement('canvas').getContext('2d')
+    fontFamily = getComputedStyle(document.body).fontFamily
+  }
+  ctx.font = `${weight} ${size}px ${fontFamily}`
+  return ctx.measureText(text).width
+}
+
+// 表头文字按换行单位拆分后各段的宽度：中文逐字可断，连续的英文、数字和符号不断开
+const tokenWidths = (text) => (text.match(/[\x21-\x7e]+|./gu) || []).map((t) => measure(t, 12, 500))
+
+// 模拟浏览器换行，返回行数
+function lineCount(text, avail) {
+  let lines = 1
+  let used = 0
+  for (const w of tokenWidths(text)) {
+    if (used > 0 && used + w > avail) [lines, used] = [lines + 1, w]
+    else used += w
+  }
+  return lines
+}
+
+// 表头文字折成不超过 maxLines 行所需的最小宽度（不可断开的英文数字串至少要能完整放下）
+const labelWidths = new Map()
+function labelWidth(text, maxLines) {
+  const key = `${maxLines}|${text}`
+  if (!labelWidths.has(key)) {
+    const tokens = tokenWidths(text)
+    let avail = Math.ceil(Math.max(tokens.reduce((a, b) => a + b, 0) / maxLines, ...tokens))
+    while (lineCount(text, avail) > maxLines) avail += 2
+    labelWidths.set(key, avail + 1)
+  }
+  return labelWidths.get(key)
+}
+
+// 估算文字宽度用于挑选最长的单元格（中文约为英文数字的两倍宽），只对挑出的那个精确测量
+const weight = (text) => [...text].reduce((w, ch) => w + (ch.charCodeAt(0) > 255 ? 2 : 1), 0)
+
+function cellText(value, col) {
+  if (value === null || value === undefined) return ''
+  if (col.fmt === 'bool' || NUMERIC_FORMATS.has(col.fmt)) return formatValue(value, col.fmt)
+  return String(value)
+}
+
+// 各列最长单元格的像素宽度
+const contentWidths = computed(() => {
+  const widths = {}
+  props.columns.forEach((col, i) => {
+    if (col.fmt === 'tags' || props.hidden.includes(col.name)) return
+    let longest = ''
+    let max = 0
+    for (const row of props.rows) {
+      const text = cellText(row[i], col)
+      const w = text.length * 2 > max ? weight(text) : 0
+      if (w > max) [max, longest] = [w, text]
+    }
+    widths[col.name] = Math.ceil(measure(longest, 13)) + 2
+  })
+  return widths
+})
+
+// 内容的列宽上限：超出的单元格以省略号结尾，悬停可看全文
+function contentMax(col) {
+  const m = isMobile.value
+  if (col.name === 'name') return m ? 88 : 120
+  if (LONG_TEXT.has(col.name)) return m ? 160 : 260
+  if (col.fmt === 'text') return m ? 120 : 180
+  return m ? 110 : 160
+}
+
+const cellPad = () => (isMobile.value ? CELL_PAD.mobile : CELL_PAD.desktop) * 2 + 2
+
+// 表头单行放不下（超过上限）时折成两行；手机上为避免折成三行，可略放宽
+function headerWidth(label) {
+  const extra = HEAD_ICONS + cellPad()
+  const [cap, wideCap] = isMobile.value ? [96, 120] : [160, 160]
+  const single = labelWidth(label, 1) + extra
+  return single <= cap ? single : Math.min(Math.max(labelWidth(label, 2) + extra, cap), wideCap)
+}
 
 function width(col, label) {
-  const head = textWidth(label) + (touch ? 58 : 36)
-  if (col.fmt === 'code') return isMobile.value ? 70 : 78
-  if (col.name === 'name') return isMobile.value ? 84 : 96
   if (col.fmt === 'tags') return isMobile.value ? 220 : 300
-  if (LONG_TEXT.has(col.name)) return 220
-  if (col.fmt === 'text') return Math.max(110, Math.min(180, head))
-  if (col.fmt === 'date') return Math.max(104, head)
-  if (col.fmt === 'bool') return Math.max(64, Math.min(150, head))
-  return Math.max(80, Math.min(160, head))
+  const content = Math.min((contentWidths.value[col.name] ?? 0) + cellPad(), contentMax(col))
+  return Math.max(content, headerWidth(label), 48)
 }
 
 function dateComparator(filterDate, cell) {
@@ -79,7 +158,7 @@ const tagsText = (tags) => (tags || []).map((t) => t.label).join(' ')
 function makeDef(col, i) {
   const help = col.help ?? columnHelp(col.name)
   const def = {
-    colId: col.name, field: String(i), headerName: col.label, initialWidth: width(col, col.label),
+    colId: col.name, field: String(i), headerName: col.label, width: width(col, col.label),
     headerTooltip: help ? `${col.label}：${help}` : col.label,
     initialSort: props.sort && props.sort[0] === col.name ? (props.sort[1] ? 'desc' : 'asc') : null,
   }
@@ -111,7 +190,7 @@ function makeDef(col, i) {
     def.filterValueGetter = (p) => (p.data[i] ? '是' : '否')
   } else {
     def.filter = 'agTextColumnFilter'
-    if (LONG_TEXT.has(col.name)) def.tooltipField = String(i)
+    def.tooltipField = String(i) // 超出列宽上限的文字以省略号结尾，悬停查看全文
   }
   return def
 }
@@ -120,8 +199,8 @@ const columnDefs = computed(() => {
   const defs = []
   if (codeIdx.value !== undefined) {
     defs.push({
-      colId: '__star', headerName: '', width: isMobile.value ? 34 : 44, pinned: isMobile.value ? null : 'left', sortable: false, filter: false, resizable: false,
-      suppressMovable: true, cellClass: 'star-cell',
+      colId: '__star', headerName: '', width: isMobile.value ? 30 : 40, minWidth: 30, pinned: isMobile.value ? null : 'left', sortable: false, filter: false,
+      cellClass: 'star-cell',
       valueGetter: (p) => state.attention.has(p.data[codeIdx.value]),
       cellRenderer: (p) => (p.value ? '★' : '☆'),
       onCellClicked: (p) => toggleAttention(p.data[codeIdx.value]).then(() => p.api.refreshCells({ columns: ['__star'], force: true })),
@@ -139,12 +218,21 @@ const columnDefs = computed(() => {
   for (const g of props.groups || []) {
     const children = g.cols
       .filter((c) => byName[c.name] && shown(c.name) && !fixed.includes(c.name))
-      .map((c) => ({ ...byName[c.name], headerName: c.short, initialWidth: width(c, c.short) }))
+      .map((c) => ({ ...byName[c.name], headerName: c.short, width: width(c, c.short) }))
     if (!children.length) continue
     if (g.title) defs.push({ groupId: `g:${g.title}`, headerName: g.title, headerClass: 'group-head', marryChildren: true, stickyLabel: true, children })
     else defs.push(...children)
   }
   return defs
+})
+
+// 表头高度按所有显示列中最多的行数统一设定，横向滚动时表头不会忽高忽低
+const headerHeight = computed(() => {
+  const lines = columnDefs.value.flatMap((d) => d.children || [d])
+    .filter((d) => d.headerName)
+    .map((d) => lineCount(d.headerName, d.width - HEAD_ICONS - cellPad()))
+  const n = Math.max(1, ...lines)
+  return n === 1 ? 34 : Math.ceil(n * HEAD_LINE + 12)
 })
 
 const theme = computed(() => themeQuartz.withPart(isDark.value ? colorSchemeDark : colorSchemeLight).withParams({
@@ -155,6 +243,7 @@ const theme = computed(() => themeQuartz.withPart(isDark.value ? colorSchemeDark
   headerColumnBorder: true,
   rowHeight: isMobile.value ? 36 : 34,
   spacing: 5,
+  cellHorizontalPadding: isMobile.value ? CELL_PAD.mobile : CELL_PAD.desktop,
   wrapperBorderRadius: 0,
   wrapperBorder: false,
   accentColor: isDark.value ? '#4f8cff' : '#2563eb',
@@ -162,6 +251,9 @@ const theme = computed(() => themeQuartz.withPart(isDark.value ? colorSchemeDark
   headerBackgroundColor: isDark.value ? '#1d1f24' : '#f9fafb',
   oddRowBackgroundColor: isDark.value ? '#1a1b20' : '#fcfcfd',
 }))
+
+// 列宽与列顺序固定，不提供拖动调整；表头文字超出列宽时换行
+const DEFAULT_COL = { sortable: true, resizable: false, unSortIcon: false, wrapHeaderText: true }
 
 const rowClassRules = {
   'is-attention': (p) => codeIdx.value !== undefined && state.attention.has(p.data[codeIdx.value]),
@@ -208,11 +300,11 @@ defineExpose({ exportCsv, resetFilters })
 </script>
 
 <template>
-  <AgGridVue class="grid" :theme="theme" :row-data="rows" :column-defs="columnDefs" :locale-text="AG_GRID_LOCALE_CN"
-             :default-col-def="{ sortable: true, resizable: true, unSortIcon: false }"
+  <AgGridVue class="grid" :theme="theme" :header-height="headerHeight" :group-header-height="34" :row-data="rows" :column-defs="columnDefs" :locale-text="AG_GRID_LOCALE_CN"
+             :default-col-def="DEFAULT_COL""
              :quick-filter-text="quickFilter" :row-class-rules="rowClassRules" :tooltip-show-delay="300"
              :is-external-filter-present="isExternalFilterPresent" :does-external-filter-pass="doesExternalFilterPass"
-             :animate-rows="false" :suppress-cell-focus="false" :enable-cell-text-selection="true"
+             :suppress-movable-columns="true" :suppress-drag-leave-hides-columns="true" :animate-rows="false" :suppress-cell-focus="false" :enable-cell-text-selection="true"
              @grid-ready="onReady" @filter-changed="updateCount" @row-data-updated="updateCount" />
 </template>
 
@@ -232,8 +324,11 @@ defineExpose({ exportCsv, resetFilters })
 }
 .grid :deep(.tag.up) { color: var(--up); background: var(--up-soft); border-color: transparent; }
 .grid :deep(.tag.down) { color: var(--down); background: var(--down-soft); border-color: transparent; }
-/* 筛选图标只在悬停或已筛选时显示，给列名留出空间；触屏设备始终显示 */
+.grid :deep(.ag-header-cell-text) { line-height: 1.3; }
+/* 未排序时也预留排序图标的位置，点击排序不会让列名重新换行 */
+.grid :deep(.ag-header-cell-sortable .ag-sort-indicator-container) { min-width: 21px; }
+/* 筛选图标只在悬停或已筛选时显示（位置保留，显示时列名不会重新换行）；触屏设备始终显示 */
 @media (hover: hover) {
-  .grid :deep(.ag-header-cell:not(:hover) .ag-header-cell-filter-button:not(.ag-filter-active)) { display: none; }
+  .grid :deep(.ag-header-cell:not(:hover) .ag-header-cell-filter-button:not(.ag-filter-active)) { visibility: hidden; }
 }
 </style>
